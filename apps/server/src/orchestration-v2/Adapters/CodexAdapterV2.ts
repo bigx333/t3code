@@ -1,3 +1,4 @@
+import { AgentSecrets } from "@t3tools/shared/AgentSecrets";
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
@@ -1331,6 +1332,7 @@ const CODEX_T3_MCP_TOOL_TIMEOUT_SEC = 65 * 60;
 
 function codexThreadRuntimeParams(input: {
   readonly mcpSession: McpProviderSession.McpProviderSessionConfig | undefined;
+  readonly environment?: Readonly<Record<string, string>>;
   readonly modelSelection?: { readonly model: string };
   readonly runtimePolicy?: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
 }): {
@@ -1344,6 +1346,9 @@ function codexThreadRuntimeParams(input: {
     ...(input.modelSelection === undefined ? {} : { model: input.modelSelection.model }),
     config: {
       ...CODEX_THREAD_CONFIG,
+      ...(input.environment === undefined || Object.keys(input.environment).length === 0
+        ? {}
+        : { "shell_environment_policy.set": input.environment }),
       ...(mcpSession === undefined
         ? {}
         : {
@@ -1392,21 +1397,23 @@ export const makeCodexAppServerSpawnCommand = Effect.fn(
   readonly extendEnv?: boolean | undefined;
   readonly threadId?: string | undefined;
 }) {
+  // Thread config supplies secrets; process inheritance would retain deleted values.
+  const env = input.env ?? (yield* HostProcess.Environment);
   const launch = yield* (yield* AgentScope).wrap({
     command: input.command,
     args: input.args,
     name: "codex",
     threadId: input.threadId,
-    env: input.env,
+    env,
     shared: true,
   });
   const spawnCommand = yield* resolveSpawnCommand(launch.command, launch.args, {
-    ...(input.env === undefined ? {} : { env: input.env }),
+    env,
     ...(input.extendEnv === undefined ? {} : { extendEnv: input.extendEnv }),
   });
   return ChildProcess.make(spawnCommand.command, spawnCommand.args, {
     ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
-    ...(input.env === undefined ? {} : { env: input.env }),
+    env,
     ...(input.extendEnv === undefined ? {} : { extendEnv: input.extendEnv }),
     shell: spawnCommand.shell,
   });
@@ -1707,6 +1714,7 @@ export interface CodexAdapterV2Options {
 export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
   adapterOptions: CodexAdapterV2Options,
 ) {
+  const agentSecrets = yield* AgentSecrets;
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
   const readMcpSession = (threadId: ThreadId | null) =>
     threadId === null ? Effect.succeed(undefined) : mcpSessions.read(threadId);
@@ -1742,6 +1750,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           settings: resolvedRuntime?.config ?? adapterOptions.settings,
           environment: resolvedRuntime?.environment ?? adapterOptions.environment,
         });
+        const nativeThreadSecretsRevisions = new Map<string, number>();
         const additionalContextByThread = yield* Ref.make(
           new Map<
             string,
@@ -6315,12 +6324,114 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           );
         });
 
+        const hasPendingBackgroundWorkForThread = Effect.fn(
+          "CodexAdapterV2.hasPendingBackgroundWorkForThread",
+        )(function* (providerThread: OrchestrationV2ProviderThread) {
+          const contexts = [
+            ...(yield* Ref.get(activeTurns)).values(),
+            ...(yield* Ref.get(settledTurns)).values(),
+          ];
+          const roots = contexts.filter(
+            (context) => context.providerThread.id === providerThread.id,
+          );
+          for (const context of contexts) {
+            if (!roots.some((root) => context === root || isDescendantCodexTurn(context, root)))
+              continue;
+            if (yield* turnHasRetainedBackgroundWork(context.nativeTurnId)) return true;
+            if (
+              context.subagent !== null &&
+              (yield* Ref.get(activeTurns)).has(context.nativeTurnId)
+            )
+              return true;
+          }
+          return false;
+        });
+
+        const resumeNativeThread = Effect.fn("CodexAdapterV2.resumeThread")(function* (
+          threadInput: Parameters<
+            ProviderAdapter.ProviderAdapterV2SessionRuntime["resumeThread"]
+          >[0],
+        ) {
+          const nativeThreadId = yield* getNativeThreadId(threadInput.providerThread);
+          const secrets = yield* agentSecrets.snapshot(
+            threadInput.threadId ?? threadInput.providerThread.appThreadId ?? undefined,
+          );
+          const loadedRevision = nativeThreadSecretsRevisions.get(nativeThreadId);
+          const stale = loadedRevision !== undefined && loadedRevision !== secrets.revision;
+          const refreshDeferred =
+            stale && (yield* hasPendingBackgroundWorkForThread(threadInput.providerThread));
+          if (stale && !refreshDeferred) {
+            // Loaded Codex threads ignore resume config while subscribed.
+            sessionApprovals.delete(nativeThreadId);
+            yield* client.request("thread/unsubscribe", { threadId: nativeThreadId });
+          }
+          // excludeTurns is not in the generated request schema yet.
+          const resume = client.raw.request("thread/resume", {
+            threadId: nativeThreadId,
+            excludeTurns: true,
+            ...codexThreadRuntimeParams({
+              environment: secrets.environment,
+              mcpSession: yield* readMcpSession(
+                threadInput.threadId ?? threadInput.providerThread.appThreadId,
+              ),
+              ...(threadInput.modelSelection === undefined
+                ? {}
+                : { modelSelection: threadInput.modelSelection }),
+              ...(threadInput.runtimePolicy === undefined
+                ? {}
+                : { runtimePolicy: threadInput.runtimePolicy }),
+            }),
+          });
+          const response = yield* ensureInitialized.pipe(
+            Effect.andThen(
+              resume.pipe(
+                Effect.catchTags({
+                  CodexAppServerRequestError: (cause) => {
+                    if (
+                      !/\bsession \S+ is archived\b|\bcodex unarchive\b/i.test(cause.errorMessage)
+                    ) {
+                      return Effect.fail(cause);
+                    }
+                    return client.raw
+                      .request("thread/unarchive", { threadId: nativeThreadId })
+                      .pipe(Effect.andThen(resume));
+                  },
+                }),
+              ),
+            ),
+            Effect.flatMap(decodeCodexResumeMetadata),
+          );
+          if (!refreshDeferred)
+            nativeThreadSecretsRevisions.set(response.thread.id, secrets.revision);
+          return {
+            ...threadInput.providerThread,
+            providerSessionId: input.providerSessionId,
+            providerInstanceId: adapterOptions.instanceId,
+            status: "idle",
+            nativeThreadRef: {
+              driver: CODEX_PROVIDER,
+              nativeId: response.thread.id,
+              strength: "strong",
+            },
+            nativeConversationHeadRef: threadInput.providerThread.nativeConversationHeadRef,
+            updatedAt: codexTimestamp(response.thread.updatedAt),
+          } satisfies OrchestrationV2ProviderThread;
+        });
+
         const startNativeTurn = Effect.fn("CodexAdapterV2.startNativeTurn")(
           function* (
             turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
             codexInput: ReadonlyArray<CodexSchema.V2TurnStartParams__UserInput>,
           ) {
             const threadId = yield* getNativeThreadId(turnInput.providerThread);
+            // Reloading this thread would discard its retained background work.
+            if (
+              nativeThreadSecretsRevisions.get(threadId) !==
+                (yield* agentSecrets.snapshot(turnInput.threadId)).revision &&
+              !(yield* hasPendingBackgroundWorkForThread(turnInput.providerThread))
+            ) {
+              yield* resumeNativeThread(turnInput);
+            }
             const mcpSession = yield* mcpSessions.read(turnInput.threadId);
             const turnStartParams = yield* buildCodexTurnStartParams({
               nativeThreadId: threadId,
@@ -6581,127 +6692,54 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             }
             return false;
           }),
-          hasPendingBackgroundWorkForThread: Effect.fn(
-            "CodexAdapterV2.hasPendingBackgroundWorkForThread",
-          )(function* (providerThread) {
-            const contexts = [
-              ...(yield* Ref.get(activeTurns)).values(),
-              ...(yield* Ref.get(settledTurns)).values(),
-            ];
-            const roots = contexts.filter(
-              (context) => context.providerThread.id === providerThread.id,
-            );
-            for (const context of contexts) {
-              if (!roots.some((root) => context === root || isDescendantCodexTurn(context, root)))
-                continue;
-              if (yield* turnHasRetainedBackgroundWork(context.nativeTurnId)) return true;
-              if (
-                context.subagent !== null &&
-                (yield* Ref.get(activeTurns)).has(context.nativeTurnId)
-              )
-                return true;
-            }
-            return false;
-          }),
-          ensureThread: (threadInput) =>
-            ensureInitialized.pipe(
-              Effect.andThen(mcpSessions.read(threadInput.threadId)),
-              Effect.flatMap((mcpSession) =>
-                client.request(
-                  "thread/start",
-                  codexThreadRuntimeParams({
-                    mcpSession,
-                    modelSelection: threadInput.modelSelection,
-                    runtimePolicy: threadInput.runtimePolicy,
-                  }),
-                ),
-              ),
-              Effect.map((response): OrchestrationV2ProviderThread =>
-                providerThreadFromCodexThread({
-                  appThreadId: threadInput.threadId,
-                  idAllocator,
-                  ownerNodeId: null,
-                  providerSessionId: input.providerSessionId,
-                  providerInstanceId: adapterOptions.instanceId,
-                  thread: response.thread,
-                }),
-              ),
-              Effect.mapError(
-                (cause) =>
-                  new ProviderAdapter.ProviderAdapterEnsureThreadError({
-                    driver: CODEX_PROVIDER,
-                    threadId: threadInput.threadId,
-                    cause: normalizeCodexCause(cause),
-                  }),
-              ),
-            ),
-          resumeThread: Effect.fn("CodexAdapterV2.resumeThread")(
+          hasPendingBackgroundWorkForThread,
+          ensureThread: Effect.fn("CodexAdapterV2.ensureThread")(
             function* (threadInput) {
-              const nativeThreadId = yield* getNativeThreadId(threadInput.providerThread);
-              // excludeTurns is not in the generated request schema yet.
-              const resume = client.raw.request("thread/resume", {
-                threadId: nativeThreadId,
-                excludeTurns: true,
-                ...codexThreadRuntimeParams({
-                  mcpSession: yield* readMcpSession(
-                    threadInput.threadId ?? threadInput.providerThread.appThreadId,
-                  ),
-                  ...(threadInput.modelSelection === undefined
-                    ? {}
-                    : { modelSelection: threadInput.modelSelection }),
-                  ...(threadInput.runtimePolicy === undefined
-                    ? {}
-                    : { runtimePolicy: threadInput.runtimePolicy }),
+              yield* ensureInitialized;
+              const secrets = yield* agentSecrets.snapshot(threadInput.threadId);
+              const response = yield* client.request(
+                "thread/start",
+                codexThreadRuntimeParams({
+                  environment: secrets.environment,
+                  mcpSession: yield* mcpSessions.read(threadInput.threadId),
+                  modelSelection: threadInput.modelSelection,
+                  runtimePolicy: threadInput.runtimePolicy,
                 }),
-              });
-              const response = yield* ensureInitialized.pipe(
-                Effect.andThen(
-                  resume.pipe(
-                    Effect.catchTags({
-                      CodexAppServerRequestError: (cause) => {
-                        if (
-                          !/\bsession \S+ is archived\b|\bcodex unarchive\b/i.test(
-                            cause.errorMessage,
-                          )
-                        ) {
-                          return Effect.fail(cause);
-                        }
-                        return client.raw
-                          .request("thread/unarchive", { threadId: nativeThreadId })
-                          .pipe(Effect.andThen(resume));
-                      },
-                    }),
-                  ),
-                ),
-                Effect.flatMap(decodeCodexResumeMetadata),
               );
-              return {
-                ...threadInput.providerThread,
+              nativeThreadSecretsRevisions.set(response.thread.id, secrets.revision);
+              return providerThreadFromCodexThread({
+                appThreadId: threadInput.threadId,
+                idAllocator,
+                ownerNodeId: null,
                 providerSessionId: input.providerSessionId,
                 providerInstanceId: adapterOptions.instanceId,
-                status: "idle",
-                nativeThreadRef: {
-                  driver: CODEX_PROVIDER,
-                  nativeId: response.thread.id,
-                  strength: "strong",
-                },
-                nativeConversationHeadRef: threadInput.providerThread.nativeConversationHeadRef,
-                updatedAt: codexTimestamp(response.thread.updatedAt),
-              } satisfies OrchestrationV2ProviderThread;
+                thread: response.thread,
+              });
             },
             (effect, threadInput) =>
               effect.pipe(
                 Effect.mapError(
                   (cause) =>
-                    new ProviderAdapter.ProviderAdapterResumeThreadError({
+                    new ProviderAdapter.ProviderAdapterEnsureThreadError({
                       driver: CODEX_PROVIDER,
-                      providerSessionId: input.providerSessionId,
-                      providerThreadId: threadInput.providerThread.id,
+                      threadId: threadInput.threadId,
                       cause: normalizeCodexCause(cause),
                     }),
                 ),
               ),
           ),
+          resumeThread: (threadInput) =>
+            resumeNativeThread(threadInput).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapter.ProviderAdapterResumeThreadError({
+                    driver: CODEX_PROVIDER,
+                    providerSessionId: input.providerSessionId,
+                    providerThreadId: threadInput.providerThread.id,
+                    cause: normalizeCodexCause(cause),
+                  }),
+              ),
+            ),
           compactThread: Effect.fn("CodexAdapterV2.compactThread")(
             function* (turnInput) {
               const threadId = yield* getNativeThreadId(turnInput.providerThread);
@@ -6834,6 +6872,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               const nativeThreadId = yield* getNativeThreadId(unloadInput.providerThread);
               sessionApprovals.delete(nativeThreadId);
               yield* client.request("thread/unsubscribe", { threadId: nativeThreadId });
+              nativeThreadSecretsRevisions.delete(nativeThreadId);
             },
             (effect, unloadInput) =>
               effect.pipe(
@@ -7379,14 +7418,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               // process. After a restart or idle release, load it the same way
               // the next turn would before reverting.
               if (!loaded) {
-                yield* client.raw.request("thread/resume", {
-                  threadId,
-                  excludeTurns: true,
-                  ...codexThreadRuntimeParams({
-                    mcpSession: yield* readMcpSession(threadInput.providerThread.appThreadId),
-                    modelSelection: input.modelSelection,
-                    runtimePolicy: input.runtimePolicy,
-                  }),
+                yield* resumeNativeThread({
+                  providerThread: threadInput.providerThread,
+                  modelSelection: input.modelSelection,
+                  runtimePolicy: input.runtimePolicy,
                 });
               }
               const response = yield* ensureInitialized.pipe(
@@ -7427,6 +7462,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             function* (threadInput) {
               const threadId = yield* getNativeThreadId(threadInput.sourceProviderThread);
               const boundary = yield* resolveCodexForkBoundary(threadInput);
+              const secrets = yield* agentSecrets.snapshot(threadInput.targetThreadId);
               const response = yield* ensureInitialized.pipe(
                 Effect.andThen(
                   client.request("thread/fork", {
@@ -7435,6 +7471,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       ? {}
                       : { lastTurnId: boundary.lastTurnId }),
                     ...codexThreadRuntimeParams({
+                      environment: secrets.environment,
                       mcpSession: yield* mcpSessions.read(threadInput.targetThreadId),
                       ...(threadInput.modelSelection === undefined
                         ? {}
@@ -7480,6 +7517,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   ),
                 )).thread;
               }
+              nativeThreadSecretsRevisions.set(forkedThread.id, secrets.revision);
               return providerThreadFromCodexThread({
                 appThreadId: threadInput.targetThreadId,
                 idAllocator,

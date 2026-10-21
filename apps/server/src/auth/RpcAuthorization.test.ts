@@ -1,4 +1,6 @@
 import {
+  ThreadSecretName,
+  TurnItemId,
   AuthEnvironmentMaintainScope,
   AuthDiagnosticsReadScope,
   AuthFilesystemReadScope,
@@ -370,4 +372,77 @@ it.effect("denies manual cleanup before the handler without settings permission"
     });
     expect(handled).toBe(false);
   }).pipe(Effect.scoped),
+);
+
+it.effect("authorizes secret RPCs before calling their handlers", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const secretTags = [
+        WS_METHODS.secretsList,
+        WS_METHODS.secretsSet,
+        WS_METHODS.secretsRemove,
+        WS_METHODS.secretsAnswerRequest,
+      ] as const;
+      const group = WsRpcGroup.omit(
+        ...[...WsRpcGroup.requests.keys()].filter(
+          (tag): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, (typeof secretTags)[number]> =>
+            !secretTags.some((secretTag) => secretTag === tag),
+        ),
+      );
+      let handled = 0;
+      const client = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            group.toLayerHandler(WS_METHODS.secretsList, () =>
+              Effect.sync(() => {
+                handled++;
+                return { secrets: [] };
+              }),
+            ),
+            group.toLayerHandler(WS_METHODS.secretsSet, () =>
+              Effect.sync(() => {
+                handled++;
+              }),
+            ),
+            group.toLayerHandler(WS_METHODS.secretsRemove, () =>
+              Effect.sync(() => {
+                handled++;
+              }),
+            ),
+            group.toLayerHandler(WS_METHODS.secretsAnswerRequest, () =>
+              Effect.sync(() => {
+                handled++;
+              }),
+            ),
+            RpcAuthorization.layer([]),
+          ),
+        ),
+      );
+      expect(yield* client[WS_METHODS.secretsList](undefined).pipe(Effect.flip)).toMatchObject({
+        requiredPermission: AuthOrchestrationReadScope,
+      });
+      expect(
+        yield* client[WS_METHODS.secretsSet]({
+          threadId: ThreadId.make("t"),
+          name: ThreadSecretName.make("TOKEN"),
+          label: "Token",
+          value: "private",
+        }).pipe(Effect.flip),
+      ).toMatchObject({ requiredPermission: AuthSettingsWriteScope });
+      expect(
+        yield* client[WS_METHODS.secretsRemove]({
+          threadId: ThreadId.make("t"),
+          name: ThreadSecretName.make("TOKEN"),
+        }).pipe(Effect.flip),
+      ).toMatchObject({ requiredPermission: AuthSettingsWriteScope });
+      expect(
+        yield* client[WS_METHODS.secretsAnswerRequest]({
+          threadId: ThreadId.make("t"),
+          turnItemId: TurnItemId.make("i"),
+          answer: { type: "decline" },
+        }).pipe(Effect.flip),
+      ).toMatchObject({ requiredPermission: AuthOrchestrationOperateScope });
+      expect(handled).toBe(0);
+    }),
+  ),
 );

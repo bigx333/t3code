@@ -1,3 +1,4 @@
+import { TurnItemId } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import {
   MessageId,
@@ -134,6 +135,38 @@ function records(
 }
 
 describe("idleCompactionWindow", () => {
+  it.each(["pending", "saved", "declined", "cancelled"] as const)(
+    "respects a completed run's %s secret card before idle compaction",
+    (secretStatus) => {
+      const value = records({ cacheExpiresInMs: 60 * MINUTE_MS });
+      value.turnItems = [
+        {
+          id: TurnItemId.make("secret-card"),
+          threadId,
+          runId,
+          nodeId: null,
+          providerThreadId,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 1,
+          title: "Credential",
+          status: secretStatus === "pending" ? "waiting" : "completed",
+          startedAt: at(-MINUTE_MS),
+          completedAt: secretStatus === "pending" ? null : at(),
+          updatedAt: at(),
+          type: "secret_request",
+          label: "Credential",
+          reason: "Continue once supplied",
+          secretStatus,
+        },
+      ];
+      const window = idleCompactionWindow(value, NOW_MS);
+      if (secretStatus === "pending") expect(window).toBeNull();
+      else expect(window).not.toBeNull();
+    },
+  );
+
   it("skips small contexts, unknown expiry, other providers, switched threads, and compactions", () => {
     const cache = { cacheExpiresInMs: 60 * MINUTE_MS };
     expect(idleCompactionWindow(records({ ...cache, usedTokens: 199_999 }), NOW_MS)).toBeNull();

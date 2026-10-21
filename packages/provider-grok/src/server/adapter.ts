@@ -79,6 +79,8 @@ import {
   type AcpAdapterV2RuntimeInput,
 } from "@t3tools/provider-acp/server/adapter";
 
+import { makeGrokToolOutputHook, type GrokToolOutputHook } from "./toolOutputHook.ts";
+
 export const GROK_PROVIDER = ProviderDriverKind.make("grok");
 const GROK_DRIVER_KIND = GROK_PROVIDER;
 export const GROK_DEFAULT_INSTANCE_ID = defaultInstanceIdForDriver(GROK_DRIVER_KIND);
@@ -230,6 +232,7 @@ export function grokLaunchRuntimeMode(
 export function makeGrokAcpAdapterFlavor(
   options: GrokAdapterV2Options,
   homeDirectory: string,
+  toolOutputHook?: GrokToolOutputHook,
 ): AcpAdapterV2Flavor {
   return {
     driver: GROK_PROVIDER,
@@ -291,6 +294,7 @@ export function makeGrokAcpAdapterFlavor(
           ...input,
           interruptPromptOnCancel: input.interruptPromptOnCancel ?? false,
           grokSettings: options.settings,
+          ...(toolOutputHook === undefined ? {} : { toolOutputHook }),
           environment: options.environment,
           runtimeMode: grokLaunchRuntimeMode(runtimePolicy),
         })),
@@ -343,7 +347,11 @@ export const makeGrokAdapterV2 = Effect.fn("makeGrokAdapterV2")(function* (
 ) {
   return yield* makeAcpAdapterV2({
     instanceId: options.instanceId,
-    flavor: makeGrokAcpAdapterFlavor(options, yield* HostProcess.HomeDirectory),
+    flavor: makeGrokAcpAdapterFlavor(
+      options,
+      yield* HostProcess.HomeDirectory,
+      yield* makeGrokToolOutputHook((yield* ProviderHost.ProviderHost).paths.stateDir),
+    ),
     selfInvocation: options.selfInvocation,
     ...(options.nativeLogging === undefined ? {} : { nativeLogging: options.nativeLogging }),
     ...(options.continuationRequests === undefined

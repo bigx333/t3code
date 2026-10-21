@@ -1,3 +1,6 @@
+import { ThreadSecretName } from "@t3tools/contracts";
+import * as ThreadSecrets from "../secrets/ThreadSecrets.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import {
@@ -51,9 +54,6 @@ const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
   Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
 );
-
-// Effect returns a declared tool failure as `isError` with its encoded payload
-// as JSON text, never as `structuredContent`.
 
 const parentThreadId = ThreadId.make("thread:mcp-orchestrator-parent");
 const projectId = ProjectId.make("project:mcp-orchestrator");
@@ -175,7 +175,7 @@ describe("orchestrator MCP toolkit", () => {
   it.live.each([
     { label: "distinct", result: queuedFollowupResult, latestSummary: queuedFollowupResult },
     { label: "identical", result: delegatedResult, latestSummary: null },
-  ])("reports $label child results", ({ result, latestSummary }) =>
+  ])("keeps secrets thread-scoped and reports $label child results", ({ result, latestSummary }) =>
     Effect.scoped(
       Effect.gen(function* () {
         const cwd = yield* checkpointWorkspace("delegated-task-status");
@@ -223,6 +223,10 @@ describe("orchestrator MCP toolkit", () => {
           Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
           Layer.provideMerge(
             SecretRequests.layer.pipe(
+              Layer.provide(
+                ProjectionStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
+              ),
+              Layer.provideMerge(ThreadSecrets.layer.pipe(Layer.provide(layerMemorySecretStore))),
               Layer.provide(layerMemorySecretStore),
               Layer.provide(layerOrchestration),
             ),
@@ -298,6 +302,91 @@ describe("orchestrator MCP toolkit", () => {
                 Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
                 Effect.provideService(McpSchema.McpServerClient, client),
               );
+
+          const secretRequests = yield* SecretRequests.SecretRequests;
+          const threadSecrets = yield* ThreadSecrets.ThreadSecrets;
+          yield* threadSecrets.set({
+            threadId: ThreadId.make("unrelated-secret-owner"),
+            name: ThreadSecretName.make("GITHUB_WEBHOOK_SECRET"),
+            label: "Same name in another thread",
+            value: "other-thread-webhook-secret",
+          });
+          const secretCall = yield* invoke("request_secret", {
+            name: "GITHUB_WEBHOOK_SECRET",
+            label: "GitHub webhook secret",
+            reason: "Signs release webhooks. Enter the same value in GitHub's webhook settings.",
+            placeholder: "Paste the webhook secret",
+            clientRequestId: "release-webhook-secret",
+          });
+          expect(secretCall.structuredContent).toEqual({
+            status: "requested",
+            name: "GITHUB_WEBHOOK_SECRET",
+            replacesExisting: false,
+          });
+          const asked = yield* orchestrator.getThreadProjection(parentThreadId);
+          const card = asked.turnItems.find((item) => item.type === "secret_request");
+          if (card?.type !== "secret_request") {
+            return yield* Effect.die(new Error("Secret request card missing."));
+          }
+          expect(card).toMatchObject({
+            label: "GitHub webhook secret",
+            placeholder: "Paste the webhook secret",
+          });
+          expect(
+            (yield* orchestrator.getThreadShell(parentThreadId))?.pendingRuntimeRequest,
+          ).toMatchObject({ kind: "user_input" });
+          expect(
+            ProjectionStore.threadShellFromProjection(asked).pendingRuntimeRequest,
+          ).toMatchObject({
+            kind: "user_input",
+          });
+          yield* secretRequests.answer({
+            threadId: parentThreadId,
+            turnItemId: card.id,
+            answer: { type: "save", secret: "github-webhook-secret" },
+          });
+          expect(secretCall.isError).toBe(false);
+          expect(
+            (yield* orchestrator.getThreadShell(parentThreadId))?.pendingRuntimeRequest ?? null,
+          ).toBeNull();
+          expect(JSON.stringify(secretCall)).not.toContain("github-webhook-secret");
+          const retried = yield* invoke("request_secret", {
+            name: "GITHUB_WEBHOOK_SECRET",
+            label: "GitHub webhook secret",
+            reason: "Signs release webhooks.",
+            clientRequestId: "release-webhook-secret",
+          });
+          expect(retried.structuredContent).toEqual({
+            status: "requested",
+            name: "GITHUB_WEBHOOK_SECRET",
+            replacesExisting: true,
+          });
+          const afterSecret = yield* orchestrator.getThreadProjection(parentThreadId);
+          expect(
+            afterSecret.turnItems.filter((item) => item.type === "secret_request"),
+          ).toHaveLength(1);
+          expect(JSON.stringify(afterSecret)).not.toContain("github-webhook-secret");
+          yield* threadSecrets.set({
+            threadId: ThreadId.make("unrelated-secret-owner"),
+            name: ThreadSecretName.make("OTHER_THREAD_TOKEN"),
+            label: "Other thread",
+            value: "other-thread-private",
+          });
+          const listedSecrets = yield* invoke("list_secrets", {});
+          expect(listedSecrets.structuredContent).toMatchObject({
+            secrets: [{ threadId: parentThreadId, name: "GITHUB_WEBHOOK_SECRET" }],
+          });
+          expect(JSON.stringify(listedSecrets)).not.toContain("OTHER_THREAD_TOKEN");
+          expect(JSON.stringify(listedSecrets)).toContain("GITHUB_WEBHOOK_SECRET");
+          expect(JSON.stringify(listedSecrets)).not.toContain("github-webhook-secret");
+          expect(
+            Option.getOrThrow(
+              yield* threadSecrets.get(
+                parentThreadId,
+                ThreadSecretName.make("GITHUB_WEBHOOK_SECRET"),
+              ),
+            ),
+          ).toBe("github-webhook-secret");
 
           const delegationStartSequence =
             yield* orchestrator.getThreadEventSequence(parentThreadId);

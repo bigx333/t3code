@@ -52,6 +52,10 @@ import * as ThreadMetadataMcpService from "./ThreadMetadataMcpService.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 import * as OrchestratorHandlers from "./toolkits/orchestrator/handlers.ts";
+import * as SecretsHandlers from "./toolkits/secrets/handlers.ts";
+import { SecretsToolkit } from "./toolkits/secrets/tools.ts";
+import * as SecretShell from "../secrets/SecretShell.ts";
+import * as RuntimePolicy from "../orchestration-v2/RuntimePolicy.ts";
 import { OrchestratorToolkit } from "./toolkits/orchestrator/tools.ts";
 import * as PreviewHandlers from "./toolkits/preview/handlers.ts";
 import {
@@ -1015,6 +1019,10 @@ export const layerOrchestratorToolkit = toolkitRegistration(
 
 export const layerThreadToolkit = toolkitRegistration(ThreadToolkit, ThreadHandlers.layer);
 
+const layerSecretsToolkit = toolkitRegistration(SecretsToolkit, SecretsHandlers.layer).pipe(
+  Layer.provide(SecretShell.layer.pipe(Layer.provide(RuntimePolicy.layerFromProjectStore))),
+);
+
 const layerWorktreeToolkitRegistration = toolkitRegistration(
   WorktreeToolkit,
   WorktreeHandlers.layer,
@@ -1068,6 +1076,7 @@ export const layerMcpTransport = McpServer.layerHttp({
 export const layer = Layer.mergeAll(
   layerPreviewToolkit,
   layerOrchestratorToolkit,
+  layerSecretsToolkit,
   layerThreadToolkit,
   layerAttachmentToolkit,
   layerProjectRegistration,

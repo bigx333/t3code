@@ -1,3 +1,4 @@
+import { makeSecretRedactor } from "@t3tools/shared/secretRedaction";
 // @effect-diagnostics nodeBuiltinImport:off -- workflow fixtures use files and the fake Claude CLI uses Node streams
 import * as NodeEvents from "node:events";
 import * as NodeFS from "node:fs";
@@ -13307,4 +13308,55 @@ describe("ClaudeAdapterV2 query message stream", () => {
       assert.isTrue(closed);
     }),
   );
+});
+
+it("redacts successful tool results with a fresh PostToolUse snapshot and keeps secrets out of option logs", async () => {
+  let redactor = makeSecretRedactor(["first-secret"]);
+  const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+    modelSelection: {
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+      model: "claude-sonnet-4-6",
+    },
+    nativeThreadId: "hook-test",
+    resume: false,
+    cwd: null,
+    redactToolOutput: async (value) => redactor.redactValue(value),
+  });
+  const hook = options.hooks?.PostToolUse?.[0]?.hooks[0];
+  assert.isDefined(hook);
+  if (hook === undefined) throw new Error("PostToolUse hook missing");
+  const input = {
+    hook_event_name: "PostToolUse" as const,
+    session_id: "session",
+    transcript_path: "/tmp/transcript",
+    cwd: "/tmp",
+    tool_name: "Bash",
+    tool_input: {},
+    tool_response: { output: "first-secret", count: 1 },
+    tool_use_id: "tool",
+  };
+  const signal = new AbortController().signal;
+  assert.deepEqual(await hook(input, "tool", { signal }), {
+    hookSpecificOutput: {
+      hookEventName: "PostToolUse",
+      updatedToolOutput: { output: "[REDACTED]", count: 1 },
+    },
+  });
+  redactor = makeSecretRedactor(["second-secret"]);
+  assert.deepEqual(
+    await hook({ ...input, tool_response: ["first-secret", "second-secret"] }, "tool", { signal }),
+    {
+      hookSpecificOutput: {
+        hookEventName: "PostToolUse",
+        updatedToolOutput: ["first-secret", "[REDACTED]"],
+      },
+    },
+  );
+  redactor = makeSecretRedactor([]);
+  assert.deepEqual(await hook(input, "tool", { signal }), {});
+  assert.deepEqual(
+    await hook({ ...input, tool_response: { output: "ordinary" } }, "tool", { signal }),
+    {},
+  );
+  assert.notInclude(JSON.stringify(ClaudeAdapterV2.loggedClaudeQueryOptions(options)), "secret");
 });

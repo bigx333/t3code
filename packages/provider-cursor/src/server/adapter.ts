@@ -1,3 +1,9 @@
+import { AgentSecrets } from "@t3tools/shared/AgentSecrets";
+import {
+  makeSecretStreamRedactor,
+  type SecretRedactor,
+  type SecretStreamRedactor,
+} from "@t3tools/shared/secretRedaction";
 import type {
   AgentMessage,
   AgentOptions,
@@ -313,6 +319,7 @@ export function makeCursorAgentOptions(input: {
   readonly mcpSession: McpProviderSession.McpProviderSessionConfig | undefined;
   readonly platform: NodeJS.Platform;
 }): AgentOptions {
+  // The in-process Cursor SDK has no per-agent environment option.
   const policy = cursorRuntimeAgentPolicy(input.runtimePolicy, input.platform);
   const mcpServers = cursorMcpServers(input.mcpSession);
   return {
@@ -905,6 +912,8 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
     planSelectionTransition: () => Effect.succeed(turnScopedSelectionTransition()),
     openSession: Effect.fn("CursorAdapterV2.openSession")(
       function* (input: ProviderAdapter.ProviderAdapterV2OpenSessionInput) {
+        const agentSecrets = yield* AgentSecrets;
+        const sessionThreadId = input.threadId;
         const sessionScope = yield* Effect.scope;
         const createdAt = yield* DateTime.now;
         const session = providerSession({
@@ -1158,6 +1167,11 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
           context.reasoning.current = null;
         });
 
+        const outputStreams = new WeakMap<
+          ActiveCursorToolCall,
+          { redactor: SecretRedactor; stream: SecretStreamRedactor }
+        >();
+
         const emitToolArtifacts = Effect.fnUntraced(function* (input: {
           readonly active: ActiveCursorToolCall;
           readonly completed: boolean;
@@ -1232,6 +1246,14 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
             | "completedAt"
             | "updatedAt"
           >;
+          const outputStream = outputStreams.get(active);
+          if (input.completed && outputStream !== undefined) {
+            const { redactor } = yield* agentSecrets.snapshot(sessionThreadId);
+            active.streamedOutput = (
+              active.streamedOutput + outputStream.stream.flush(redactor)
+            ).slice(-MAX_CURSOR_STREAMED_OUTPUT_CHARS);
+            outputStreams.delete(active);
+          }
           const outputText = cursorToolOutputText(toolCall) || active.streamedOutput;
           let turnItem: OrchestrationV2TurnItem;
           switch (toolCall.type) {
@@ -1963,7 +1985,19 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               // The completed call persists the final output once. Re-emitting the
               // whole accumulated output on every delta grew the event store
               // quadratically; live output goes to the command output hub instead.
-              shell.streamedOutput = (shell.streamedOutput + chunk).slice(
+              const { redactor } = yield* agentSecrets.snapshot(sessionThreadId);
+              let state = outputStreams.get(shell);
+              let safeChunk = chunk;
+              if (!redactor.isEmpty || state !== undefined) {
+                let pending = "";
+                if (state?.redactor !== redactor) {
+                  pending = state?.stream.flush(redactor) ?? "";
+                  state = { redactor, stream: makeSecretStreamRedactor(redactor) };
+                  outputStreams.set(shell, state);
+                }
+                safeChunk = state.stream.push(pending + chunk);
+              }
+              shell.streamedOutput = (shell.streamedOutput + safeChunk).slice(
                 -MAX_CURSOR_STREAMED_OUTPUT_CHARS,
               );
               yield* emitProviderEvent({

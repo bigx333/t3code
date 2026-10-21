@@ -1,3 +1,6 @@
+import { makeSecretStreamRedactor } from "@t3tools/shared/secretRedaction";
+import { AgentSecrets, withAgentSecrets } from "@t3tools/shared/AgentSecrets";
+import type { ThreadId } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -87,6 +90,7 @@ export interface AcpTerminalOutputSnapshot {
 interface ManagedAcpTerminal {
   readonly terminalId: string;
   readonly sessionId: string;
+  readonly threadId: ThreadId | undefined;
   readonly commandLine: string;
   readonly buffer: OutputBufferState;
   readonly exit: Deferred.Deferred<EffectAcpSchema.WaitForTerminalExitResponse>;
@@ -129,6 +133,7 @@ export interface AcpClientTerminalsOptions {
   readonly environmentForSession?:
     | ((sessionId: string) => NodeJS.ProcessEnv | undefined)
     | undefined;
+  readonly threadForSession?: ((sessionId: string) => ThreadId | undefined) | undefined;
   readonly forceKillAfter?: Duration.Input | undefined;
 }
 
@@ -217,12 +222,14 @@ export const makeAcpClientTerminals = Effect.fn("makeAcpClientTerminals")(functi
             (request.env ?? []).map((variable) => [variable.name, variable.value] as const),
           );
           const sessionEnvironment = options.environmentForSession?.(request.sessionId);
-          const environment =
+          const baseEnvironment =
             options.environment === undefined &&
             sessionEnvironment === undefined &&
             (request.env?.length ?? 0) === 0
               ? undefined
               : { ...options.environment, ...sessionEnvironment, ...requestEnvironment };
+          const threadId = options.threadForSession?.(request.sessionId);
+          const environment = yield* withAgentSecrets(baseEnvironment, threadId);
           const terminalScope = yield* Scope.make();
           const child = yield* restore(
             spawner
@@ -255,6 +262,7 @@ export const makeAcpClientTerminals = Effect.fn("makeAcpClientTerminals")(functi
           const record: ManagedAcpTerminal = {
             terminalId,
             sessionId: request.sessionId,
+            threadId,
             commandLine: [request.command, ...(request.args ?? [])].join(" "),
             buffer: {
               chunks: [],
@@ -273,12 +281,27 @@ export const makeAcpClientTerminals = Effect.fn("makeAcpClientTerminals")(functi
           };
           terminals.set(terminalId, record);
 
+          const secrets = yield* AgentSecrets;
+          let { redactor } = yield* secrets.snapshot(threadId);
+          let outputStream = makeSecretStreamRedactor(redactor);
+          const appendRedacted = (text: string) => {
+            if (text.length === 0) return;
+            appendOutput(record.buffer, NodeBuffer.Buffer.from(text));
+            enforceTotalOutputLimit();
+          };
           const pump = (stream: typeof child.stdout) =>
             stream.pipe(
+              Stream.decodeText(),
               Stream.runForEach((chunk) =>
-                Effect.sync(() => {
-                  appendOutput(record.buffer, chunk);
-                  enforceTotalOutputLimit();
+                Effect.gen(function* () {
+                  const current = (yield* secrets.snapshot(record.threadId)).redactor;
+                  let pending = "";
+                  if (current !== redactor) {
+                    pending = outputStream.flush(current);
+                    redactor = current;
+                    outputStream = makeSecretStreamRedactor(current);
+                  }
+                  appendRedacted(outputStream.push(pending + chunk));
                 }),
               ),
               Effect.ignore,
@@ -296,7 +319,9 @@ export const makeAcpClientTerminals = Effect.fn("makeAcpClientTerminals")(functi
                   discard: true,
                 }).pipe(
                   Effect.andThen(
-                    Effect.sync(() => {
+                    Effect.gen(function* () {
+                      const { redactor } = yield* secrets.snapshot(record.threadId);
+                      appendRedacted(outputStream.flush(redactor));
                       record.exitStatus = status;
                     }),
                   ),
@@ -312,11 +337,16 @@ export const makeAcpClientTerminals = Effect.fn("makeAcpClientTerminals")(functi
 
   const output: AcpClientTerminals["output"] = (request) =>
     requireTerminal(request.sessionId, request.terminalId, "terminal/output").pipe(
-      Effect.map((terminal) => ({
-        output: readOutput(terminal.buffer),
-        truncated: terminal.buffer.truncated,
-        ...(terminal.exitStatus === undefined ? {} : { exitStatus: terminal.exitStatus }),
-      })),
+      Effect.flatMap((terminal) =>
+        Effect.gen(function* () {
+          const { redactor } = yield* (yield* AgentSecrets).snapshot(terminal.threadId);
+          return {
+            output: redactor.redactText(readOutput(terminal.buffer)),
+            truncated: terminal.buffer.truncated,
+            ...(terminal.exitStatus === undefined ? {} : { exitStatus: terminal.exitStatus }),
+          };
+        }),
+      ),
     );
 
   const waitForExit: AcpClientTerminals["waitForExit"] = (request) =>

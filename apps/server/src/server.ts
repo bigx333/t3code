@@ -1,3 +1,7 @@
+import * as ToolOutputHooks from "./secrets/ToolOutputHooks.ts";
+import * as ToolOutputHookHttp from "./secrets/http.ts";
+import * as AgentSecretsLive from "./secrets/AgentSecretsLive.ts";
+import * as ThreadSecrets from "./secrets/ThreadSecrets.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import * as Random from "effect/Random";
@@ -704,6 +708,7 @@ const layerMakeRoutes = Layer.mergeAll(
     ServerHttp.layerOtlpTracesProxyRoute,
     ServerHttp.layerAssetRoute,
     ServerHttp.layerAttachmentUploadRoute,
+    ToolOutputHookHttp.layer,
     DeviceHubProxy.layer,
     ServerBrowserStream.routeLayer,
     ServerHttp.layerStaticAndDevRoute,
@@ -1057,11 +1062,19 @@ const layerMakeServer = Layer.unwrap(
       ),
       Layer.provide(layerActivation),
       Layer.provideMerge(RelayTracing.layerServerRelayBroker),
+      Layer.provideMerge(
+        ToolOutputHooks.layerAgentHooks.pipe(Layer.provideMerge(ToolOutputHooks.layer)),
+      ),
       Layer.provideMerge(layerHttpServer),
       Layer.provide(layerApplicationObservability),
       Layer.provideMerge(FetchHttpClient.layer),
       Layer.provide(VcsProcess.layer),
       Layer.provideMerge(AgentScopeLive.layer),
+      Layer.provideMerge(
+        AgentSecretsLive.layer.pipe(
+          Layer.provide(ThreadSecrets.layer.pipe(Layer.provide(ServerSecretStore.layer))),
+        ),
+      ),
       Layer.provideMerge(layerPlatformServices),
     );
   }),

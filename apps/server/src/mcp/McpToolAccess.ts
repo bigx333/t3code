@@ -1,3 +1,4 @@
+import { AgentSecrets } from "@t3tools/shared/AgentSecrets";
 import {
   OrchestratorMcpFailure,
   type ProviderInteractionMode,
@@ -5,6 +6,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Struct from "effect/Struct";
 import type * as Layer from "effect/Layer";
@@ -67,7 +69,15 @@ export class Declaration<out Handler> {
     this.#handle = handle;
   }
   static {
-    declare = (handle) => new Declaration(builtHere, handle);
+    declare = (handle) =>
+      new Declaration(builtHere, (params) =>
+        Effect.gen(function* () {
+          const invocation = yield* Effect.serviceOption(McpInvocationContext.McpInvocationContext);
+          const threadId = Option.getOrUndefined(invocation)?.thread?.threadId;
+          const { redactor } = yield* (yield* AgentSecrets).snapshot(threadId);
+          return yield* handle(redactor.redactValue(params));
+        }),
+      );
     checkedHandler = Struct.lambda<CheckedHandler>((declaration) => declaration.#handle);
   }
 }

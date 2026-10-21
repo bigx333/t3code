@@ -26,6 +26,23 @@ const v2TableCount = Effect.gen(function* () {
 });
 
 describe("runMigrations", () => {
+  it.effect("adds the pending secret index after webhook dedupe", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 67 });
+      assert.deepStrictEqual(yield* runMigrations(), [[68, "PendingSecretRequestIndex"]]);
+      assert.deepStrictEqual(yield* runMigrations(), []);
+      assert.deepStrictEqual(
+        yield* sql`
+          SELECT name FROM sqlite_master
+          WHERE type = 'index'
+            AND name = 'orchestration_v2_projection_turn_items_pending_secret_idx'
+        `,
+        [{ name: "orchestration_v2_projection_turn_items_pending_secret_idx" }],
+      );
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect("refuses to start when another migration took a V2 id", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

@@ -459,6 +459,17 @@ export const layerExecutor: Layer.Layer<
                     }),
                 ),
               );
+          case "secrets.cleanup":
+            return resourceCleanup.cleanupSecrets(effect.threadId).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationEffectExecutionError({
+                    effectId: effect.id,
+                    effectType: effect.request.type,
+                    cause,
+                  }),
+              ),
+            );
           case "scheduled-tasks.cleanup":
             return resourceCleanup.cleanupScheduledTasks(effect.threadId).pipe(
               Effect.mapError(

@@ -1,3 +1,4 @@
+import { withAgentSecrets } from "@t3tools/shared/AgentSecrets";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
@@ -485,7 +486,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         command: scopedLaunch.command,
         args: scopedLaunch.args,
         cwd,
-        env: launch.env,
+        env: yield* withAgentSecrets(launch.env, input.threadId),
       }).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.mapError(
@@ -3024,7 +3025,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
                   command: options.settings.binaryPath || "pi",
                   args: [...forkLaunch.args, "--fork", sourceFile],
                   cwd,
-                  env: forkLaunch.env,
+                  env: yield* withAgentSecrets(forkLaunch.env, forkInput.targetThreadId),
                 });
                 yield* Stream.fromQueue(forkConnection.events).pipe(
                   Stream.runDrain,

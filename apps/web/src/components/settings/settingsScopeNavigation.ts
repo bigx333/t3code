@@ -25,3 +25,7 @@ export const retainSettingsScope: SearchMiddleware<SettingsScopeSearch> = ({ sea
   );
   return { ...previousScope, ...result };
 };
+
+export function isSingleEnvironmentSettingsPath(pathname: string) {
+  return pathname === "/settings/providers" || pathname === "/settings/secrets";
+}

@@ -35,6 +35,7 @@ function createSettingsRouter(initialEntry = "/settings/general") {
   const general = createRoute({ getParentRoute: () => settings, path: "general" });
   const projects = createRoute({ getParentRoute: () => settings, path: "projects" });
   const integrations = createRoute({ getParentRoute: () => settings, path: "integrations" });
+  const secrets = createRoute({ getParentRoute: () => settings, path: "secrets" });
   const sourceControl = createRoute({ getParentRoute: () => settings, path: "source-control" });
   const providers = createRoute({
     getParentRoute: () => settings,
@@ -71,6 +72,7 @@ function createSettingsRouter(initialEntry = "/settings/general") {
         projects,
         integrations,
         sourceControl,
+        secrets,
         providers,
         scheduledTasks,
       ]),
@@ -111,6 +113,7 @@ describe("settings scope navigation", () => {
     "/settings/integrations",
     "/settings/source-control",
     "/settings/scheduled-tasks",
+    "/settings/secrets",
   ] as const)(
     "keeps %s when regrouping or selecting a target from the shared settings layout",
     async (to) => {

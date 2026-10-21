@@ -994,7 +994,46 @@ export function createServerEnvironmentAtoms<R, E>(
     concurrency: configConcurrency,
   });
 
+  const listSecrets = createEnvironmentRpcCommand(runtime, {
+    label: "environment-data:server:secrets:list",
+    tag: WS_METHODS.secretsList,
+  });
+  const secretsAtom = Atom.family((environmentId: EnvironmentId) =>
+    runtime
+      .atom((get) => {
+        get(listSecrets.permissionAtom(environmentId));
+        return Effect.promise(() =>
+          listSecrets.run(get.registry, { environmentId, input: undefined }),
+        ).pipe(
+          Effect.flatMap((result) =>
+            result._tag === "Success"
+              ? Effect.succeed(result.value)
+              : Effect.failCause(result.cause),
+          ),
+        );
+      })
+      .pipe(Atom.setIdleTTL(0), Atom.withLabel(`environment-data:server:secrets:${environmentId}`)),
+  );
+
   return {
+    listSecrets,
+    secretsAtom,
+    setSecret: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:secrets:set",
+      tag: WS_METHODS.secretsSet,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+      onSuccess: ({ environmentId }, registry) =>
+        Effect.sync(() => registry.refresh(secretsAtom(environmentId))),
+    }),
+    removeSecret: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:secrets:remove",
+      tag: WS_METHODS.secretsRemove,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+      onSuccess: ({ environmentId }, registry) =>
+        Effect.sync(() => registry.refresh(secretsAtom(environmentId))),
+    }),
     configValueAtom,
     runStorageCleanup: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:run-storage-cleanup",
@@ -1341,6 +1380,10 @@ export function createServerEnvironmentAtoms<R, E>(
     answerSecretRequest: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:secrets:answer-request",
       tag: WS_METHODS.secretsAnswerRequest,
+      onSuccess: ({ environmentId, input }, registry) =>
+        input.answer.type === "save"
+          ? Effect.sync(() => registry.refresh(secretsAtom(environmentId)))
+          : Effect.void,
       concurrency: {
         mode: "singleFlight",
         key: ({ environmentId, input }) =>

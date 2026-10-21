@@ -1,3 +1,4 @@
+import { AgentSecrets } from "@t3tools/shared/AgentSecrets";
 // @effect-diagnostics nodeBuiltinImport:off
 /**
  * Native and canonical views share batching, rotation, and retention state so
@@ -646,6 +647,7 @@ export const makeEventNdjsonLogStore = Effect.fnUntraced(function* (
   EventNdjsonLogStoreError,
   FileSystem.FileSystem | Path.Path
 > {
+  const agentSecrets = yield* AgentSecrets;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const resolved = yield* resolveOptions(filePath, options);
@@ -760,16 +762,23 @@ export const makeEventNdjsonLogStore = Effect.fnUntraced(function* (
 
     const write = Effect.fnUntraced(function* (event: unknown, threadId: ThreadId | null) {
       if (!shouldPersistProviderEvent(stream, event)) return;
-      let payload = yield* serializeEvent(boundProviderEventForLogging(event));
+      const redactor =
+        stream === "native"
+          ? yield* agentSecrets.redactor
+          : (yield* agentSecrets.snapshot(threadId ?? undefined)).redactor;
+      const bounded = redactor.redactValue(boundProviderEventForLogging(event));
+      let payload = yield* serializeEvent(bounded);
       if (payload === undefined) return;
       // Escaping can expand strings beyond their input size.
       if (Buffer.byteLength(payload) > MAX_RECORD_CHARACTERS) {
-        payload = yield* serializeEvent(summarizeProviderEvent(event));
+        payload = yield* serializeEvent(redactor.redactValue(summarizeProviderEvent(event)));
         if (payload === undefined) return;
       }
 
       const observedAt = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));
-      const line = `[${observedAt}] ${resolveStreamLabel(stream)}: ${payload}\n`;
+      const line = redactor.redactText(
+        `[${observedAt}] ${resolveStreamLabel(stream)}: ${payload}\n`,
+      );
       const bytes = Buffer.byteLength(line);
       const action = yield* SynchronizedRef.modifyEffect(stateRef, (state) => {
         if (state.closed) {

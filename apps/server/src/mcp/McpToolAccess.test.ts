@@ -1,3 +1,5 @@
+import { AgentSecrets } from "@t3tools/shared/AgentSecrets";
+import { makeSecretRedactor } from "@t3tools/shared/secretRedaction";
 import { expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
@@ -339,4 +341,89 @@ it.effect("refuses a change when the calling thread cannot be read", () =>
       ),
     ),
   ),
+);
+
+it.effect.each(["calling-thread", "other-thread", undefined] as const)(
+  "redacts tool inputs only for their calling thread (%s)",
+  (callerThread) => {
+    const masked = callerThread === "calling-thread" ? "[REDACTED]" : "saved-value";
+    const inputSchema = Schema.Struct({
+      name: Schema.String,
+      label: Schema.String,
+      reason: Schema.String,
+      placeholder: Schema.String,
+      message: Schema.String,
+      prompt: Schema.String,
+      threadId: Schema.String,
+      type: Schema.String,
+      metadata: Schema.Record(Schema.String, Schema.Unknown),
+    });
+    const toolkit = Toolkit.make(
+      Tool.make("input_probe", {
+        parameters: inputSchema,
+        success: inputSchema,
+      }),
+    );
+    const handlers = McpToolAccess.toLayer(toolkit, {
+      input_probe: McpToolAccess.reads((input) => Effect.succeed(input)),
+    });
+    return Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      const result = yield* server.callTool({
+        name: "input_probe",
+        arguments: {
+          name: "TOKEN",
+          label: "saved-value",
+          reason: "replace saved-value",
+          placeholder: "saved-value",
+          message: "saved-value",
+          prompt: "saved-value",
+          threadId: "saved-value",
+          type: "saved-value",
+          metadata: { "saved-value": "saved-value" },
+        },
+      });
+      expect(result.isError).not.toBe(true);
+      const text = result.content
+        .map((entry) => (entry.type === "text" ? entry.text : ""))
+        .join("");
+      const decoded = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(inputSchema))(text);
+      expect(decoded).toEqual({
+        name: "TOKEN",
+        label: masked,
+        reason: `replace ${masked}`,
+        placeholder: masked,
+        message: masked,
+        prompt: masked,
+        threadId: "saved-value",
+        type: "saved-value",
+        metadata: { [masked]: masked },
+      });
+    }).pipe(
+      Effect.provideService(McpSchema.McpServerClient, mcpClient),
+      Effect.provide(
+        McpHttpServer.toolkitRegistration(toolkit, handlers).pipe(
+          Layer.provideMerge(McpServer.McpServer.layer),
+        ),
+      ),
+      Effect.provideService(
+        McpInvocationContext.McpInvocationContext,
+        callerThread === undefined
+          ? clientCaller("read-only")
+          : threadCaller(ThreadId.make(callerThread)),
+      ),
+      Effect.provideService(AgentSecrets, {
+        redactor: Effect.succeed(makeSecretRedactor(["saved-value"])),
+        snapshot: (threadId) =>
+          Effect.sync(() => {
+            expect(threadId).toBe(callerThread);
+            return {
+              revision: 1,
+              environment: {},
+              redactor: makeSecretRedactor(threadId === "calling-thread" ? ["saved-value"] : []),
+            };
+          }),
+      }),
+    );
+  },
 );

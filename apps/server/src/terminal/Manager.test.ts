@@ -1,3 +1,5 @@
+import { AgentSecrets } from "@t3tools/shared/AgentSecrets";
+import { emptySecretRedactor, makeSecretRedactor } from "@t3tools/shared/secretRedaction";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -8,6 +10,7 @@ import {
   type TerminalRestartInput,
   ProviderDriverKind,
   ProviderInstanceId,
+  ThreadId,
   TerminalProviderInstanceNotFoundError,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -18,13 +21,16 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import * as Path from "effect/Path";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
+import * as TestClock from "effect/testing/TestClock";
 import { expect, vi } from "vite-plus/test";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
@@ -415,6 +421,238 @@ it.layer(
   Layer.merge(NodeServices.layer, ProcessRunner.layer.pipe(Layer.provide(NodeServices.layer))),
   { excludeTestServices: true },
 )("TerminalManager", (it) => {
+  it.effect(
+    "injects secrets only at spawn and redacts split PTY output before broadcast and history",
+    () =>
+      Effect.gen(function* () {
+        const { manager, ptyAdapter, logsDir, getEvents } = yield* createManager();
+        const done = yield* Deferred.make<void>();
+        const unsubscribe = yield* manager.subscribe((event) =>
+          event.type === "exited"
+            ? Deferred.succeed(done, undefined).pipe(Effect.asVoid)
+            : Effect.void,
+        );
+        yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+        yield* manager.open(openInput());
+        assert.equal(ptyAdapter.spawnInputs[0]?.env.TEST_SECRET, "terminal-secret");
+        const process = ptyAdapter.processes[0];
+        if (process === undefined) throw new Error("Missing PTY");
+        process.emitData("before terminal");
+        process.emitData("-sec");
+        process.emitData("ret after term");
+        process.emitExit({ exitCode: 0, signal: 0 });
+        yield* Deferred.await(done);
+        const events = yield* getEvents;
+        const output = events
+          .filter((event) => event.type === "output")
+          .map((event) => event.data)
+          .join("");
+        assert.equal(output, "before [REDACTED] after term");
+        yield* manager.close({ threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID });
+        const fs = yield* FileSystem.FileSystem;
+        assert.equal(
+          yield* fs.readFileString(yield* historyLogPath(logsDir)),
+          "before [REDACTED] after term",
+        );
+      }).pipe(
+        Effect.provideService(AgentSecrets, {
+          redactor: Effect.succeed(emptySecretRedactor),
+          snapshot: () =>
+            Effect.succeed({
+              revision: 1,
+              environment: { TEST_SECRET: "terminal-secret" },
+              redactor: makeSecretRedactor(["terminal-secret"]),
+            }),
+        }),
+      ),
+  );
+
+  it.effect("flushes a held PTY prefix after 30 ms of inactivity", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter, getEvents } = yield* createManager(5, { processKillGraceMs: 0 });
+      const output = yield* Queue.unbounded<string>();
+      const unsubscribe = yield* manager.subscribe((event) =>
+        event.type === "output" ? Queue.offer(output, event.data).pipe(Effect.asVoid) : Effect.void,
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+      yield* manager.open(openInput());
+      const process = ptyAdapter.processes[0];
+      if (process === undefined) throw new Error("Missing PTY");
+      process.emitData("before s");
+      assert.equal(yield* Queue.take(output), "before ");
+      yield* TestClock.adjust("20 millis");
+      process.emitData("oops s");
+      assert.equal(yield* Queue.take(output), "soops ");
+      yield* TestClock.adjust("29 millis");
+      assert.isTrue(Option.isNone(yield* Queue.poll(output)));
+      yield* TestClock.adjust("1 millis");
+      assert.equal(
+        (yield* getEvents)
+          .filter((event) => event.type === "output")
+          .map((event) => event.data)
+          .join(""),
+        "before soops s",
+      );
+      const snapshot = yield* manager.open(openInput());
+      assert.equal(snapshot.history, "before soops s");
+    }).pipe(
+      Effect.provide(TestClock.layer()),
+      Effect.provideService(AgentSecrets, {
+        redactor: Effect.succeed(emptySecretRedactor),
+        snapshot: () =>
+          Effect.succeed({
+            revision: 1,
+            environment: {},
+            redactor: makeSecretRedactor(["secret-value"]),
+          }),
+      }),
+    ),
+  );
+
+  it.effect("refreshes redaction without relaunching a terminal when secrets rotate", () =>
+    Effect.gen(function* () {
+      let revision = 1;
+      let redactor = makeSecretRedactor(["first-secret"]);
+      yield* Effect.gen(function* () {
+        const { manager, ptyAdapter, getEvents } = yield* createManager();
+        const output = yield* Queue.unbounded<void>();
+        const done = yield* Deferred.make<void>();
+        const unsubscribe = yield* manager.subscribe((event) =>
+          event.type === "output"
+            ? Queue.offer(output, undefined).pipe(Effect.asVoid)
+            : event.type === "exited"
+              ? Deferred.succeed(done, undefined).pipe(Effect.asVoid)
+              : Effect.void,
+        );
+        yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+        const initial = yield* manager.open(openInput());
+        const process = ptyAdapter.processes[0];
+        if (process === undefined) throw new Error("Missing PTY");
+        process.emitData("before first");
+        yield* Queue.take(output);
+        revision++;
+        redactor = makeSecretRedactor(["second-secret"]);
+        const reopened = yield* manager.open(openInput());
+        assert.equal(reopened.pid, initial.pid);
+        assert.lengthOf(ptyAdapter.spawnInputs, 1);
+        process.emitData("-secret and second-secret");
+        process.emitExit({ exitCode: 0, signal: 0 });
+        yield* Deferred.await(done);
+        const events = yield* getEvents;
+        assert.equal(
+          events
+            .filter((event) => event.type === "output")
+            .map((event) => event.data)
+            .join(""),
+          "before first-secret and [REDACTED]",
+        );
+      }).pipe(
+        Effect.provideService(AgentSecrets, {
+          redactor: Effect.succeed(emptySecretRedactor),
+          snapshot: () =>
+            Effect.sync(() => ({
+              revision,
+              environment: { TEST_SECRET: revision === 1 ? "first-secret" : "second-secret" },
+              redactor,
+            })),
+        }),
+      );
+    }),
+  );
+
+  it.effect(
+    "isolates terminal environments and output while replacing and deleting thread secrets",
+    () =>
+      Effect.gen(function* () {
+        const threadA = ThreadId.make("terminal-a");
+        const threadB = ThreadId.make("terminal-b");
+        let revision = 1;
+        let redactorA = makeSecretRedactor(["alpha-token", "alpha-token-long"]);
+        const redactorB = makeSecretRedactor(["bravo-token"]);
+        yield* Effect.gen(function* () {
+          const { manager, ptyAdapter } = yield* createManager(5, { processKillGraceMs: 0 });
+          const output = yield* Queue.unbounded<Extract<TerminalEvent, { type: "output" }>>();
+          const exited = yield* Queue.unbounded<void>();
+          const unsubscribe = yield* manager.subscribe((event) =>
+            event.type === "output"
+              ? Queue.offer(output, event).pipe(Effect.asVoid)
+              : event.type === "exited"
+                ? Queue.offer(exited, undefined).pipe(Effect.asVoid)
+                : Effect.void,
+          );
+          yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+          for (const threadId of [threadA, threadB, "no-thread-secrets"])
+            yield* manager.open(openInput({ threadId }));
+          assert.equal(ptyAdapter.spawnInputs[0]?.env.THREAD_TOKEN, "alpha-token");
+          assert.equal(ptyAdapter.spawnInputs[1]?.env.THREAD_TOKEN, "bravo-token");
+          assert.isUndefined(ptyAdapter.spawnInputs[2]?.env.THREAD_TOKEN);
+          const emit = Effect.fnUntraced(function* (index: number, text: string, expected: string) {
+            const process = ptyAdapter.processes[index];
+            if (process === undefined) throw new Error("Missing PTY");
+            process.emitData(text);
+            assert.equal((yield* Queue.take(output)).data, expected);
+          });
+          yield* emit(0, "alpha-token bravo-token|", "[REDACTED] bravo-token|");
+          yield* emit(1, "alpha-token bravo-token|", "alpha-token [REDACTED]|");
+          yield* emit(2, "alpha-token bravo-token|", "alpha-token bravo-token|");
+          yield* emit(0, "pending alpha-token", "pending ");
+          revision++;
+          redactorA = makeSecretRedactor(["charlie-token", "charlie-token-long"]);
+          yield* emit(0, "!alpha-token charlie-token|", "alpha-token!alpha-token [REDACTED]|");
+          yield* emit(
+            1,
+            "alpha-token charlie-token bravo-token|",
+            "alpha-token charlie-token [REDACTED]|",
+          );
+          yield* emit(0, "pending charlie-token", "pending ");
+          revision++;
+          redactorA = emptySecretRedactor;
+          yield* emit(0, "!alpha-token charlie-token|", "charlie-token!alpha-token charlie-token|");
+          const snapshotA = yield* manager.open(openInput({ threadId: threadA }));
+          const snapshotB = yield* manager.open(openInput({ threadId: threadB }));
+          assert.equal(
+            snapshotA.history,
+            "[REDACTED] bravo-token|pending alpha-token!alpha-token [REDACTED]|pending charlie-token!alpha-token charlie-token|",
+          );
+          assert.equal(
+            snapshotB.history,
+            "alpha-token [REDACTED]|alpha-token charlie-token [REDACTED]|",
+          );
+          assert.lengthOf(ptyAdapter.spawnInputs, 3);
+          yield* manager.open(openInput({ threadId: threadA, terminalId: "after-delete" }));
+          assert.isUndefined(ptyAdapter.spawnInputs[3]?.env.THREAD_TOKEN);
+          for (const process of ptyAdapter.processes) {
+            process.emitExit({ exitCode: 0, signal: 0 });
+            yield* Queue.take(exited);
+          }
+        }).pipe(
+          Effect.provideService(AgentSecrets, {
+            snapshot: (threadId) =>
+              Effect.sync(() => ({
+                revision: threadId === threadA ? revision : threadId === threadB ? 1 : 0,
+                environment:
+                  threadId === threadA
+                    ? revision === 3
+                      ? {}
+                      : { THREAD_TOKEN: revision === 1 ? "alpha-token" : "charlie-token" }
+                    : threadId === threadB
+                      ? { THREAD_TOKEN: "bravo-token" }
+                      : {},
+                redactor:
+                  threadId === threadA
+                    ? redactorA
+                    : threadId === threadB
+                      ? redactorB
+                      : emptySecretRedactor,
+              })),
+            redactor: Effect.succeed(
+              makeSecretRedactor(["alpha-token", "bravo-token", "charlie-token"]),
+            ),
+          }),
+        );
+      }).pipe(Effect.provide(TestClock.layer())),
+  );
+
   it.effect("spawns lazily and reuses running terminal per thread", () =>
     Effect.gen(function* () {
       const { manager, ptyAdapter } = yield* createManager();

@@ -1,13 +1,11 @@
+import { ThreadId } from "@t3tools/contracts";
+import * as Option from "effect/Option";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect's Crypto has no createHmac.
 import * as NodeCrypto from "node:crypto";
 
 import * as NodePlatformCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
-import {
-  ScheduledTaskUpsertInput,
-  ScheduledTaskWebhookDeliveryId,
-  SecretRequestError,
-} from "@t3tools/contracts";
+import { ScheduledTaskUpsertInput, ScheduledTaskWebhookDeliveryId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
@@ -23,7 +21,7 @@ import * as Tracer from "effect/Tracer";
 
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
-import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as ThreadSecrets from "../secrets/ThreadSecrets.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
@@ -157,7 +155,7 @@ const withService = <A, E>(
     readonly service: ScheduledTaskService.ScheduledTaskService["Service"];
     readonly launches: Queue.Queue<LaunchInput>;
     readonly sql: SqlClient.SqlClient;
-    readonly secretsByRef: Map<string, string>;
+    readonly secretsByName: Map<string, string>;
   }) => Effect.Effect<A, E, never>,
   options: {
     readonly onFrame?: () => void;
@@ -176,7 +174,7 @@ const withService = <A, E>(
 ) =>
   Effect.gen(function* () {
     const launches = yield* Queue.unbounded<LaunchInput>();
-    const secretsByRef = new Map<string, string>();
+    const secretsByName = new Map<string, string>();
     const layerDependencies = Layer.mergeAll(
       options.frameGate === undefined && options.onFrame === undefined
         ? NodePlatformCrypto.layer
@@ -235,14 +233,9 @@ const withService = <A, E>(
         isScratchProject: () => Effect.succeed(false),
       }),
       Layer.mock(ThreadManagementService.ThreadManagementService)({}),
-      Layer.mock(SecretRequests.SecretRequests)({
-        consume: ({ ref }) => {
-          const value = secretsByRef.get(ref);
-          secretsByRef.delete(ref);
-          return value === undefined
-            ? Effect.fail(new SecretRequestError({ reason: "ref_unavailable" }))
-            : Effect.succeed(value);
-        },
+      Layer.mock(ThreadSecrets.ThreadSecrets)({
+        get: (threadId, name) =>
+          Effect.succeed(Option.fromNullishOr(secretsByName.get(`${threadId}:${name}`))),
       }),
       Layer.succeed(
         ScheduledTaskService.ScheduledTaskWebhookOrigin,
@@ -252,7 +245,7 @@ const withService = <A, E>(
     return yield* Effect.gen(function* () {
       const service = yield* ScheduledTaskService.ScheduledTaskService;
       const sql = yield* SqlClient.SqlClient;
-      return yield* body({ service, launches, sql, secretsByRef });
+      return yield* body({ service, launches, sql, secretsByName });
     }).pipe(
       Effect.provide(
         Layer.fresh(ScheduledTaskService.layer.pipe(Layer.provide(layerDependencies))),
@@ -711,18 +704,24 @@ it.effect("skips a held request older than the task's max age", () =>
 const githubSignature = (secret: string) =>
   `sha256=${NodeCrypto.createHmac("sha256", secret).update(pullRequestBody).digest("hex")}`;
 
-it.effect("a signature can take the user's secret by ref, which works only once", () =>
-  withService(({ service, launches, secretsByRef }) =>
+it.effect("a named secret installs webhook signing and remains reusable", () =>
+  withService(({ service, launches, secretsByName }) =>
     Effect.gen(function* () {
-      secretsByRef.set("secret-ref:00000000000000000000000000000001", "github-secret");
-      const githubSchedule = (secretRef: string) => ({
+      secretsByName.set("signing-thread:GITHUB_WEBHOOK_SECRET", "github-secret");
+      const githubSchedule = (secretName: string) => ({
         type: "webhook",
-        signature: { header: "x-hub-signature-256", encoding: "hex", prefix: "sha256=", secretRef },
+        signature: {
+          header: "x-hub-signature-256",
+          encoding: "hex",
+          prefix: "sha256=",
+          secretName,
+        },
       });
       const { task } = yield* service.upsert(
         yield* webhookTaskInput({
-          schedule: githubSchedule("secret-ref:00000000000000000000000000000001"),
+          schedule: githubSchedule("GITHUB_WEBHOOK_SECRET"),
         }),
+        ThreadId.make("signing-thread"),
       );
       assert.isTrue(task.webhook!.hasSecret);
       const signed = yield* service.triggerWebhook(
@@ -736,23 +735,52 @@ it.effect("a signature can take the user's secret by ref, which works only once"
       assert.equal(signed._tag, "accepted");
       yield* Queue.take(launches);
 
-      const reused = yield* service
+      const reused = yield* service.upsert(
+        yield* webhookTaskInput({
+          id: "scheduled-task:second",
+          schedule: githubSchedule("GITHUB_WEBHOOK_SECRET"),
+        }),
+        ThreadId.make("signing-thread"),
+      );
+      assert.isTrue(reused.task.webhook!.hasSecret);
+      const unrelated = yield* service
         .upsert(
           yield* webhookTaskInput({
-            id: "scheduled-task:other",
-            schedule: githubSchedule("secret-ref:00000000000000000000000000000001"),
+            id: "scheduled-task:unrelated",
+            threadId: "other-thread",
+            schedule: githubSchedule("GITHUB_WEBHOOK_SECRET"),
           }),
         )
         .pipe(Effect.flip);
-      assert.include(reused.message, "already used");
+      assert.include(unrelated.message, "does not exist for the scheduling thread");
+      const unscoped = yield* service
+        .upsert(
+          yield* webhookTaskInput({
+            id: "scheduled-task:unscoped",
+            threadId: "signing-thread",
+            schedule: githubSchedule("GITHUB_WEBHOOK_SECRET"),
+          }),
+          null,
+        )
+        .pipe(Effect.flip);
+      assert.include(unscoped.message, "does not exist for the scheduling thread");
+      const missing = yield* service
+        .upsert(
+          yield* webhookTaskInput({
+            threadId: "signing-thread",
+            schedule: githubSchedule("UNKNOWN_SECRET"),
+          }),
+        )
+        .pipe(Effect.flip);
+      assert.include(missing.message, "Thread secret UNKNOWN_SECRET does not exist");
     }),
   ),
 );
 
-it.effect("a retried save with an already used secretRef keeps the stored secret", () =>
-  withService(({ service, launches, secretsByRef }) =>
+it.effect("a named secret takes precedence over a supplied raw secret", () =>
+  withService(({ service, launches, secretsByName }) =>
     Effect.gen(function* () {
-      secretsByRef.set("secret-ref:00000000000000000000000000000002", "github-secret");
+      secretsByName.set("signing-thread:GITHUB_WEBHOOK_SECRET", "github-secret");
       const save = webhookTaskInput({
         id: undefined,
         commandId: "command:mcp:schedule-task:release-hook",
@@ -762,11 +790,11 @@ it.effect("a retried save with an already used secretRef keeps the stored secret
             header: "x-hub-signature-256",
             encoding: "hex",
             prefix: "sha256=",
-            secretRef: "secret-ref:00000000000000000000000000000002",
+            secretName: "GITHUB_WEBHOOK_SECRET",
           },
         },
       });
-      const first = yield* service.upsert(yield* save);
+      const first = yield* service.upsert(yield* save, ThreadId.make("signing-thread"));
       const retried = yield* service.upsert(
         yield* webhookTaskInput({
           id: undefined,
@@ -777,11 +805,12 @@ it.effect("a retried save with an already used secretRef keeps the stored secret
               header: "x-hub-signature-256",
               encoding: "hex",
               prefix: "sha256=",
-              secretRef: "secret-ref:00000000000000000000000000000002",
+              secretName: "GITHUB_WEBHOOK_SECRET",
               secret: "made-up-secret",
             },
           },
         }),
+        ThreadId.make("signing-thread"),
       );
       assert.equal(retried.task.id, first.task.id);
       const signed = yield* service.triggerWebhook(
@@ -796,6 +825,58 @@ it.effect("a retried save with an already used secretRef keeps the stored secret
       yield* Queue.take(launches);
     }),
   ),
+);
+
+it.effect(
+  "rotates named signing secrets while preserving dedupe and authenticating before replay admission",
+  () =>
+    withService(
+      ({ service, launches, secretsByName }) =>
+        Effect.gen(function* () {
+          const owner = ThreadId.make("signing-thread");
+          const signature = {
+            header: "x-hub-signature-256",
+            encoding: "hex",
+            prefix: "sha256=",
+            secretName: "GITHUB_WEBHOOK_SECRET",
+          };
+          const dedupe = { replayKey: "{{headers.delivery-id}}" };
+          secretsByName.set(`${owner}:GITHUB_WEBHOOK_SECRET`, "original-secret");
+          const { task } = yield* service.upsert(
+            yield* webhookTaskInput({ schedule: { type: "webhook", signature, dedupe } }),
+            owner,
+          );
+          const signed = (secret: string, deliveryId: string) =>
+            requestFor(task, {
+              headers: {
+                "x-hub-signature-256": githubSignature(secret),
+                "delivery-id": deliveryId,
+              },
+            });
+          const first = yield* service.triggerWebhook(signed("original-secret", "initial"));
+          assert.equal(first._tag === "accepted" && first.outcome, "accepted");
+          yield* Queue.take(launches);
+
+          secretsByName.set(`${owner}:GITHUB_WEBHOOK_SECRET`, "rotated-secret");
+          const updated = yield* service.upsert(
+            yield* webhookTaskInput({ schedule: { type: "webhook", signature } }),
+            owner,
+          );
+          assert.deepEqual(
+            updated.task.schedule.type === "webhook" && updated.task.schedule.dedupe,
+            dedupe,
+          );
+          const forged = yield* service.triggerWebhook(signed("original-secret", "rotation"));
+          assert.equal(forged._tag, "rejected_signature");
+          const valid = yield* service.triggerWebhook(signed("rotated-secret", "rotation"));
+          assert.equal(valid._tag === "accepted" && valid.outcome, "accepted");
+          yield* Queue.take(launches);
+          const duplicate = yield* service.triggerWebhook(signed("rotated-secret", "rotation"));
+          assert.equal(duplicate._tag === "accepted" && duplicate.outcome, "duplicate");
+          assert.equal(yield* Queue.size(launches), 0);
+        }),
+      { workers: new Map() },
+    ),
 );
 
 it.effect("a signature without any secret is refused", () =>

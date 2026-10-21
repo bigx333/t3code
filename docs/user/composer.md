@@ -12,6 +12,36 @@ becomes an attachment when inserting it would exceed the message limit. On a
 hardware keyboard, use `Cmd+Shift+V` on Apple devices or `Ctrl+Shift+V` elsewhere
 to keep a large paste editable in the composer instead.
 
+## Secrets
+
+Give an agent a credential through a secret request instead of pasting it into chat.
+The agent calls `request_secret` with a name such as `GITHUB_TOKEN`, a label, and a reason,
+then ends its turn. Save or decline the masked card from any client, even after the turn ends.
+Answering a secret card requires the same access as operating the thread; changing secrets in Settings requires settings access.
+T3 Code resumes the thread when you answer.
+
+Secrets belong only to the thread that requested them. Child and forked threads do not
+inherit secrets, even when they include the original thread's history. Agents can use
+`list_secrets` to find only their own thread's saved names.
+
+Use **Settings → Secrets** on web, desktop, or mobile to replace or delete secrets.
+Select the environment you want to manage. Each entry identifies its thread. Secrets persist
+until you delete them or their thread, and do not sync to other environments. Settings never shows saved values.
+New agent processes and terminals in the owning thread receive them as environment variables
+such as `$GITHUB_TOKEN`. Existing processes keep their previous values until restarted.
+All agents can use `t3_secret_shell` in auto or full-access threads, with output redacted before
+the model sees it. Cursor uses secrets through this tool; its built-in shell, external OpenCode
+servers, and the OpenCode 2 shared server do not receive saved secrets.
+
+T3 Code redacts the thread's current secret values from its conversation history and terminal
+output. Native provider logs redact current secrets from all threads. Deleting or replacing a
+secret immediately stops masking its old value in new output, including output from an already
+running process. Existing processes can still hold that old value until restarted.
+The secret shell tool, Claude, and Grok redact successful tool results before they reach the model.
+Grok keeps the original output if its redaction hook cannot be reached.
+Other built-in shells can expose printed secrets to the model. Values shorter than four characters,
+transformed values such as base64, and copies in provider-owned files are outside these protections.
+
 ## Formatting
 
 The composer writes Markdown and shows it styled as you type. Markers such as

@@ -1,4 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
+import { AgentSecrets } from "@t3tools/shared/AgentSecrets";
+import { emptySecretRedactor } from "@t3tools/shared/secretRedaction";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CheckpointId,
@@ -518,6 +520,34 @@ const startTurn = Effect.fnUntraced(function* (
 });
 
 describe("PiAdapterV2", () => {
+  it.effect("launches each Pi process with only its thread's secrets", () =>
+    Effect.gen(function* () {
+      for (const threadId of [THREAD_ID, ThreadId.make("other-pi-thread")]) {
+        const fake = yield* makeFakePi;
+        yield* openRuntime(fake, "default", threadId);
+        assert.deepEqual(
+          { FIRST: fake.lastSpawn().env.FIRST, SECOND: fake.lastSpawn().env.SECOND },
+          threadId === THREAD_ID
+            ? { FIRST: "first-secret", SECOND: undefined }
+            : { FIRST: undefined, SECOND: "second-secret" },
+        );
+      }
+    }).pipe(
+      Effect.provideService(AgentSecrets, {
+        snapshot: (threadId) =>
+          Effect.succeed({
+            revision: 1,
+            environment:
+              threadId === THREAD_ID ? { FIRST: "first-secret" } : { SECOND: "second-secret" },
+            redactor: emptySecretRedactor,
+          }),
+        redactor: Effect.succeed(emptySecretRedactor),
+      }),
+      Effect.scoped,
+      Effect.provide(layerTest),
+    ),
+  );
+
   it.effect.each([false, true])(
     "completes a resumed user turn before native wake events arrive, Pi streaming=%s",
     (streaming) =>

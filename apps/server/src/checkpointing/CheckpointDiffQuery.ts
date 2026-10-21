@@ -1,3 +1,4 @@
+import { AgentSecrets } from "@t3tools/shared/AgentSecrets";
 import {
   OrchestrationGetTurnDiffResult,
   type OrchestrationGetFullThreadDiffInput,
@@ -85,6 +86,7 @@ export const make = Effect.gen(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
   const checkpointStore = yield* CheckpointStore.CheckpointStore;
   const crypto = yield* Crypto.Crypto;
+  const secrets = yield* AgentSecrets;
 
   const getTurnDiff: CheckpointDiffQuery["Service"]["getTurnDiff"] = Effect.fn("getTurnDiff")(
     function* (input) {
@@ -252,7 +254,8 @@ export const make = Effect.gen(function* () {
         remainingBytes -= patchBytes;
       }
 
-      const turnDiff = buildTurnDiffResult(input, diff);
+      const { redactor } = yield* secrets.snapshot(input.threadId);
+      const turnDiff = buildTurnDiffResult(input, redactor.redactText(diff));
       if (!isTurnDiffResult(turnDiff)) {
         return yield* new CheckpointDiffResultInvalidError({
           operation,

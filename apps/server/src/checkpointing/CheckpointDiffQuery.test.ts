@@ -1,3 +1,5 @@
+import { AgentSecrets } from "@t3tools/shared/AgentSecrets";
+import { emptySecretRedactor, makeSecretRedactor } from "@t3tools/shared/secretRedaction";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it, vi } from "@effect/vitest";
@@ -343,3 +345,89 @@ it.effect("preserves an exact-fit filtered patch across batches without a marker
     assert.strictEqual(patchReads, 2);
   }).pipe(Effect.provide(layer));
 });
+
+it.effect("redacts saved values in turn and full thread checkpoint diffs", () =>
+  Effect.gen(function* () {
+    const query = yield* CheckpointDiffQuery.CheckpointDiffQuery;
+    for (const result of [
+      yield* query.getTurnDiff({ threadId, fromTurnCount: 0, toTurnCount: 2 }),
+      yield* query.getFullThreadDiff({ threadId, toTurnCount: 2 }),
+    ]) {
+      assert.equal(result.diff, "+TOKEN=[REDACTED]");
+      assert.equal(result.threadId, threadId);
+    }
+  }).pipe(
+    Effect.provide(
+      layerFor({
+        projection: Effect.succeed(makeProjection()),
+        diffCheckpoints: () => Effect.succeed("+TOKEN=saved-diff-secret"),
+      }).pipe(
+        Layer.provide(
+          Layer.succeed(AgentSecrets, {
+            redactor: Effect.succeed(emptySecretRedactor),
+            snapshot: () =>
+              Effect.succeed({
+                revision: 1,
+                environment: {},
+                redactor: makeSecretRedactor(["saved-diff-secret"]),
+              }),
+          }),
+        ),
+      ),
+    ),
+  ),
+);
+
+it.effect("uses only the query thread's current secrets for every diff", () =>
+  Effect.gen(function* () {
+    const otherThreadId = ThreadId.make("checkpoint-other");
+    let values = ["alpha-token"];
+    yield* Effect.gen(function* () {
+      const query = yield* CheckpointDiffQuery.CheckpointDiffQuery;
+      const check = Effect.fnUntraced(function* (requestedThread: ThreadId, expected: string) {
+        const turn = yield* query.getTurnDiff({
+          threadId: requestedThread,
+          fromTurnCount: 0,
+          toTurnCount: 2,
+        });
+        const full = yield* query.getFullThreadDiff({ threadId: requestedThread, toTurnCount: 2 });
+        assert.equal(turn.diff, expected);
+        assert.equal(full.diff, expected);
+      });
+      yield* check(threadId, "+[REDACTED] bravo-token charlie-token");
+      yield* check(otherThreadId, "+alpha-token [REDACTED] charlie-token");
+      values = ["charlie-token"];
+      yield* check(threadId, "+alpha-token bravo-token [REDACTED]");
+      values = [];
+      yield* check(threadId, "+alpha-token bravo-token charlie-token");
+      yield* check(otherThreadId, "+alpha-token [REDACTED] charlie-token");
+    }).pipe(
+      Effect.provide(
+        layerFor({
+          projection: Effect.succeed(makeProjection()),
+          diffCheckpoints: () => Effect.succeed("+alpha-token bravo-token charlie-token"),
+        }).pipe(
+          Layer.provide(
+            Layer.succeed(AgentSecrets, {
+              snapshot: (requestedThread) =>
+                Effect.sync(() => ({
+                  revision: 0,
+                  environment: {},
+                  redactor: makeSecretRedactor(
+                    requestedThread === threadId
+                      ? values
+                      : requestedThread === otherThreadId
+                        ? ["bravo-token"]
+                        : [],
+                  ),
+                })),
+              redactor: Effect.succeed(
+                makeSecretRedactor(["alpha-token", "bravo-token", "charlie-token"]),
+              ),
+            }),
+          ),
+        ),
+      ),
+    );
+  }),
+);

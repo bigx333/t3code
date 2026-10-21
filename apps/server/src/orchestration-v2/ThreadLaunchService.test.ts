@@ -49,7 +49,7 @@ import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProviderRegistryMock from "../provider/testUtils/providerRegistryMock.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ScheduledTasks from "../scheduledTasks/ScheduledTaskService.ts";
-import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as ThreadSecrets from "../secrets/ThreadSecrets.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import { ClaudeProviderCapabilitiesV2 } from "./Adapters/ClaudeAdapterV2.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
@@ -319,7 +319,7 @@ it.effect.each(
           harness.layer,
           NodeCrypto.layer,
           Scheduler.layer,
-          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(ThreadSecrets.ThreadSecrets)({}),
         ),
       ),
     );
@@ -384,7 +384,7 @@ it.effect(
           harness.layer,
           NodeCrypto.layer,
           Scheduler.layer,
-          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(ThreadSecrets.ThreadSecrets)({}),
         ),
       ),
     );
@@ -421,7 +421,7 @@ it.effect("runs a thread-bound automation on the provider the thread uses now", 
         harness.layer,
         NodeCrypto.layer,
         Scheduler.layer,
-        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(ThreadSecrets.ThreadSecrets)({}),
       ),
     ),
   );
@@ -885,7 +885,7 @@ function scratchHarness() {
         harness.layer,
         NodeCrypto.layer,
         Scheduler.layer,
-        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(ThreadSecrets.ThreadSecrets)({}),
       ),
     ),
   );

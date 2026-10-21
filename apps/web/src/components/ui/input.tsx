@@ -6,6 +6,7 @@ import { cn } from "~/lib/utils";
 type InputProps = Omit<InputPrimitive.Props & React.RefAttributes<HTMLInputElement>, "size"> & {
   size?: "sm" | "compact" | "default" | "lg" | number;
   font?: "default" | "mono";
+  mask?: boolean;
   unstyled?: boolean;
   nativeInput?: boolean;
 };
@@ -14,6 +15,7 @@ function Input({
   className,
   size = "default",
   font = "default",
+  mask = false,
   unstyled = false,
   nativeInput = false,
   ...props
@@ -66,6 +68,7 @@ function Input({
             size === "compact" &&
             "rounded-md before:rounded-[calc(var(--radius-md)-1px)]",
           font === "mono" && "font-mono tabular-nums",
+          mask && "[-webkit-text-security:disc]",
           className,
         ) || undefined
       }

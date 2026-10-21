@@ -331,6 +331,14 @@
       "types": "./src/nodeRuntime.ts",
       "import": "./src/nodeRuntime.ts"
     },
+    "./secretRedaction": {
+      "types": "./src/secretRedaction.ts",
+      "import": "./src/secretRedaction.ts"
+    },
+    "./AgentSecrets": {
+      "types": "./src/AgentSecrets.ts",
+      "import": "./src/AgentSecrets.ts"
+    },
     "./AgentScope": {
       "types": "./src/AgentScope.ts",
       "import": "./src/AgentScope.ts"
@@ -502,6 +510,10 @@
     "./markdownMath": {
       "types": "./src/markdownMath.ts",
       "import": "./src/markdownMath.ts"
+    },
+    "./AgentToolOutputHooks": {
+      "types": "./src/AgentToolOutputHooks.ts",
+      "import": "./src/AgentToolOutputHooks.ts"
     }
   },
   "scripts": {

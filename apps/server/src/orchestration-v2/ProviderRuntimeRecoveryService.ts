@@ -146,10 +146,15 @@ function resolveStaleBackgroundItemProviderInstanceId(
 const cancelledItem = (
   item: OrchestrationV2ThreadProjection["turnItems"][number],
   now: DateTime.Utc,
-): OrchestrationV2ThreadProjection["turnItems"][number] =>
-  item.type === "secret_request" && item.secretStatus === "pending"
-    ? { ...item, status: "cancelled", secretStatus: "cancelled", completedAt: now, updatedAt: now }
-    : { ...item, status: "cancelled", completedAt: now, updatedAt: now };
+): OrchestrationV2ThreadProjection["turnItems"][number] => ({
+  ...item,
+  ...(item.type === "secret_request" && item.secretStatus === "pending"
+    ? { secretStatus: "cancelled" as const }
+    : {}),
+  status: "cancelled",
+  completedAt: now,
+  updatedAt: now,
+});
 
 function latestStartedRun(
   projection: ProjectionStore.ProjectionRuntimeRecoveryState,
@@ -436,6 +441,11 @@ export const make = Effect.gen(function* () {
             candidate.runId === run.id &&
             (candidate.nodeId === null || !messageRequestNodeIds.has(candidate.nodeId)) &&
             !isAppOwnedDelegationItem(candidate) &&
+            !(
+              candidate.type === "secret_request" &&
+              candidate.name !== undefined &&
+              candidate.secretStatus === "pending"
+            ) &&
             (candidate.status === "pending" ||
               candidate.status === "running" ||
               candidate.status === "waiting"),

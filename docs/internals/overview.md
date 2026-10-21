@@ -41,6 +41,20 @@ Provider-specific behavior belongs behind an adapter. Orchestration works with n
 and events, so adding a provider should not require branches throughout the domain or clients.
 See [provider constraints](./providers.md).
 
+Thread secrets follow process lifetime, not turn lifetime. Injection and conversation or terminal
+redaction use only the owning thread's current secrets. Child and forked threads never inherit
+secrets. Provider runtimes carry the thread secrets revision they were spawned with. The
+[session manager](../../apps/server/src/orchestration-v2/ProviderSessionManager.ts) can recycle a
+stale runtime only after active turns and background work settle. Redactors refresh when the
+thread snapshot changes. Deleting or replacing a secret immediately stops masking its old value
+in new output, even when an existing process still holds that value. Native NDJSON logs use the
+union of current secrets across threads, without retaining removed values. The OpenCode 2 shared
+server receives no thread secrets because its process serves multiple threads.
+Redacting T3 events cannot protect provider-owned files or model input. The T3 `t3_secret_shell`
+MCP tool redacts command output before returning it to any provider,
+using the calling thread's runtime cwd and secrets in auto or full-access mode. Claude also rewrites
+successful built-in tool results before the model sees them.
+
 ## Settings ownership
 
 Client preferences stay in the current client; environment defaults and project overrides stay

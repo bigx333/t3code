@@ -1527,7 +1527,6 @@ export function threadShellFromProjection(
     projection.runs
       .filter(isActivityRunForShell)
       .toSorted((left, right) => right.ordinal - left.ordinal)[0] ?? null;
-  const liveRunIds = new Set(projection.runs.filter(isActivityRunForShell).map((run) => run.id));
   let pendingRuntimeRequest = pendingRuntimeRequestSummary(
     projection.runtimeRequests
       .filter((request) => request.status === "pending")
@@ -1544,12 +1543,12 @@ export function threadShellFromProjection(
             (item) =>
               item.type === "secret_request" &&
               item.status === "waiting" &&
-              item.runId !== null &&
-              liveRunIds.has(item.runId),
+              item.secretStatus === "pending",
           )
           .toSorted(
             (left, right) =>
-              DateTime.toEpochMillis(right.updatedAt) - DateTime.toEpochMillis(left.updatedAt),
+              DateTime.toEpochMillis(right.updatedAt) - DateTime.toEpochMillis(left.updatedAt) ||
+              (left.id < right.id ? 1 : left.id > right.id ? -1 : 0),
           )[0] ?? null,
       ) ?? pendingRuntimeRequest;
   }
@@ -5727,13 +5726,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               ) AS pending_request_payload_json,
               (
                 SELECT secret.payload_json
-                -- Keep runs outermost so completed history is never scanned for a pending secret.
-                FROM orchestration_v2_projection_runs r
-                CROSS JOIN orchestration_v2_projection_turn_items secret
-                  INDEXED BY orchestration_v2_projection_turn_items_thread_run_idx
-                WHERE r.thread_id = t.thread_id
-                  AND r.status IN ('preparing', 'starting', 'running', 'waiting')
-                  AND secret.thread_id = t.thread_id AND secret.run_id = r.run_id
+                FROM orchestration_v2_projection_turn_items secret
+                  INDEXED BY orchestration_v2_projection_turn_items_pending_secret_idx
+                WHERE secret.thread_id = t.thread_id
                   AND secret.type = 'secret_request' AND secret.status = 'waiting'
                 ORDER BY secret.updated_at DESC, secret.turn_item_id DESC
                 LIMIT 1

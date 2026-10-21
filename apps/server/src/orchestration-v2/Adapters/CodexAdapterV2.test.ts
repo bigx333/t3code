@@ -1,3 +1,5 @@
+import { AgentSecrets } from "@t3tools/shared/AgentSecrets";
+import { makeSecretRedactor } from "@t3tools/shared/secretRedaction";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import {
   makeProviderTextDeltaCoalescer,
@@ -59,6 +61,8 @@ import * as Orchestrator from "../Orchestrator.ts";
 import * as ProviderReplayHarness from "../testkit/ProviderReplayHarness.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import * as CodexAdapterV2 from "./CodexAdapterV2.ts";
 import { makeReplayServerConfig, withCodexReplayChildMetadata } from "./CodexAdapterV2.testkit.ts";
 import * as CodexAdapterV2Testkit from "./CodexAdapterV2.testkit.ts";
@@ -202,6 +206,54 @@ describe("CodexAdapterV2 runtime policy", () => {
       });
       assert.isDefined(withT3.additionalContext?.["t3_code_runtime"]);
     }),
+  );
+});
+
+describe("CodexAdapterV2 process spawning", () => {
+  it.effect("resolves Windows command shims without pinning secrets in the shared process", () =>
+    Effect.gen(function* () {
+      const command = yield* CodexAdapterV2.makeCodexAppServerSpawnCommand({
+        command: "codex",
+        args: ["app-server", "argument with spaces"],
+        cwd: "C:\\workspace",
+        env: { CUSTOM: "1" },
+        extendEnv: true,
+      });
+
+      assert.isTrue(ChildProcess.isStandardCommand(command));
+      if (!ChildProcess.isStandardCommand(command)) {
+        return;
+      }
+      assert.equal(
+        command.command,
+        '^"C:\\npm\\codex.cmd^" ^"app-server^" ^"argument^ with^ spaces^"',
+      );
+      assert.deepEqual(command.args, []);
+      assert.equal(command.options.shell, true);
+      assert.equal(command.options.cwd, "C:\\workspace");
+      assert.deepEqual(command.options.env, { CUSTOM: "1" });
+      assert.equal(command.options.extendEnv, true);
+    }).pipe(
+      Effect.provideService(AgentSecrets, {
+        redactor: Effect.succeed(makeSecretRedactor([])),
+        snapshot: () =>
+          Effect.succeed({
+            revision: 1,
+            environment: { TEST_SECRET: "injected-secret" },
+            redactor: makeSecretRedactor(["injected-secret"]),
+          }),
+      }),
+      Effect.provideService(HostProcess.Platform, "win32"),
+      Effect.provideService(HostProcess.Environment, {
+        PATH: "C:\\Windows\\System32",
+        HOST_ONLY: "1",
+      }),
+      Effect.provideService(SpawnExecutableResolution, (_command, _platform, environment) => {
+        assert.equal(environment.HOST_ONLY, "1");
+        assert.equal(environment.CUSTOM, "1");
+        return "C:\\npm\\codex.cmd";
+      }),
+    ),
   );
 });
 
@@ -2633,6 +2685,272 @@ describe("CodexAdapterV2 post-settle continuation", () => {
   );
 
   const BG_SCENARIO = "codex-bg-exec-wake";
+  it.effect.each(["configured", "empty"] as const)(
+    "isolates native threads A and B when B has %s secrets and is forked from A",
+    (target) =>
+      Effect.gen(function* () {
+        const nativeA = "native-secret-a";
+        const nativeB = "native-secret-b";
+        const threadB = ThreadId.make("thread-secret-b");
+        const environmentA = { A_SECRET: "a-only" };
+        const environmentB = target === "configured" ? { B_SECRET: "b-only" } : {};
+        const threadConfig = (environment: Readonly<Record<string, string>>) => ({
+          ...CodexAdapterV2.CODEX_THREAD_CONFIG,
+          ...(Object.keys(environment).length === 0
+            ? {}
+            : { "shell_environment_policy.set": environment }),
+        });
+        const preamble = codexReplayPreamble({
+          nativeThreadId: nativeA,
+          nativeTurnId: "unused",
+          prompt: "unused",
+        }).slice(0, 5);
+        const start = preamble[3];
+        assert.equal(start?.type, "expect_outbound");
+        preamble[3] = {
+          type: "expect_outbound",
+          label: "thread/start",
+          frame: { id: 2, method: "thread/start", params: { config: threadConfig(environmentA) } },
+        };
+        const requests: Array<unknown> = [];
+        const harness = yield* makeCodexReplayHarness(
+          makeCodexReplayTranscript({
+            scenario: "native-thread-secret-isolation",
+            entries: [
+              ...preamble,
+              {
+                type: "expect_outbound",
+                frame: {
+                  id: 3,
+                  method: "thread/fork",
+                  params: { threadId: nativeA, config: threadConfig(environmentB) },
+                },
+              },
+              {
+                type: "emit_inbound",
+                frame: {
+                  id: 3,
+                  result: codexReplayThreadResult({
+                    nativeThreadId: nativeB,
+                    forkedFromId: nativeA,
+                  }),
+                },
+              },
+            ],
+          }),
+          () => Effect.void,
+          (method, params) =>
+            Effect.sync(() => {
+              if (method === "thread/start" || method === "thread/fork") requests.push(params);
+            }),
+        ).pipe(
+          Effect.provideService(AgentSecrets, {
+            snapshot: (threadId) => {
+              const environment = threadId === threadB ? environmentB : environmentA;
+              return Effect.succeed({
+                revision: 1,
+                environment,
+                redactor: makeSecretRedactor(Object.values(environment)),
+              });
+            },
+            redactor: Effect.succeed(makeSecretRedactor(["a-only", "b-only"])),
+          }),
+        );
+        const forked = yield* harness.runtime.forkThread({
+          sourceProviderThread: harness.providerThread,
+          targetThreadId: threadB,
+        });
+        assert.equal(forked.appThreadId, threadB);
+        assert.deepEqual(requests, [
+          { cwd: "/workspace", model: "gpt-5.4", config: threadConfig(environmentA) },
+          { threadId: nativeA, config: threadConfig(environmentB) },
+        ]);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+  );
+
+  it.effect.each(["replace", "remove"] as const)(
+    "reloads only the stale native thread after a secret %s",
+    (change) =>
+      Effect.gen(function* () {
+        const nativeThreadId = `secret-${change}`;
+        const prompt = "Use the configured environment.";
+        let revision = 1;
+        let environment: Record<string, string> = { MY_KEY: "first-value" };
+        const preamble = codexReplayPreamble({ nativeThreadId, nativeTurnId: "first", prompt });
+        const entries: CodexReplay.CodexAppServerReplayEntry[] = preamble.map((entry) =>
+          entry.type === "expect_outbound" && entry.label === "thread/start"
+            ? {
+                ...entry,
+                frame: {
+                  id: 2,
+                  method: "thread/start",
+                  params: {
+                    config: {
+                      ...CodexAdapterV2.CODEX_THREAD_CONFIG,
+                      "shell_environment_policy.set": { MY_KEY: "first-value" },
+                    },
+                  },
+                },
+              }
+            : entry,
+        );
+        entries.push({
+          type: "emit_inbound",
+          frame: {
+            method: "turn/completed",
+            params: {
+              threadId: nativeThreadId,
+              turn: makeCodexReplayTurn({ id: "first", status: "completed" }),
+            },
+          },
+        });
+        const otherNativeThreadId = `${nativeThreadId}-other`;
+        const otherThreadId = ThreadId.make(`${nativeThreadId}-other-app`);
+        for (const entry of codexReplayPreamble({
+          nativeThreadId: otherNativeThreadId,
+          nativeTurnId: "other",
+          prompt,
+        }).slice(3, 7)) {
+          entries.push(
+            withReplayRequestId(
+              entry.type === "expect_outbound" && entry.label === "thread/start"
+                ? {
+                    ...entry,
+                    frame: {
+                      method: "thread/start",
+                      params: {
+                        config: {
+                          ...CodexAdapterV2.CODEX_THREAD_CONFIG,
+                          "shell_environment_policy.set": { OTHER_KEY: "other-only" },
+                        },
+                      },
+                    },
+                  }
+                : entry,
+              entry.type !== "runtime_exit" && entry.label === "thread/start" ? 4 : 5,
+            ),
+          );
+        }
+        entries.push({
+          type: "emit_inbound",
+          frame: {
+            method: "turn/completed",
+            params: {
+              threadId: otherNativeThreadId,
+              turn: makeCodexReplayTurn({ id: "other", status: "completed" }),
+            },
+          },
+        });
+        entries.push(
+          {
+            type: "expect_outbound",
+            frame: { id: 6, method: "thread/unsubscribe", params: { threadId: nativeThreadId } },
+          },
+          { type: "emit_inbound", frame: { id: 6, result: { status: "unsubscribed" } } },
+          {
+            type: "expect_outbound",
+            frame: {
+              id: 7,
+              method: "thread/resume",
+              params: {
+                threadId: nativeThreadId,
+                excludeTurns: true,
+                config: {
+                  ...CodexAdapterV2.CODEX_THREAD_CONFIG,
+                  ...(change === "replace"
+                    ? { "shell_environment_policy.set": { MY_KEY: "second-value" } }
+                    : {}),
+                },
+              },
+            },
+          },
+          {
+            type: "emit_inbound",
+            frame: { id: 7, result: { thread: { id: nativeThreadId, updatedAt: 1782622450 } } },
+          },
+        );
+        entries.push(
+          ...codexReplayPreamble({ nativeThreadId, nativeTurnId: "second", prompt })
+            .slice(5, 7)
+            .map((entry) => withReplayRequestId(entry, 8)),
+        );
+        const transcript = makeCodexReplayTranscript({ scenario: `secret-${change}`, entries });
+        const requests: string[] = [];
+        const harness = yield* makeCodexReplayHarness(
+          transcript,
+          () => Effect.void,
+          (method) =>
+            Effect.sync(() => {
+              requests.push(method);
+            }),
+        ).pipe(
+          Effect.provideService(AgentSecrets, {
+            redactor: Effect.succeed(makeSecretRedactor([])),
+            snapshot: (threadId) =>
+              Effect.sync(() => {
+                assert.isDefined(threadId);
+                const snapshotEnvironment =
+                  threadId === otherThreadId ? { OTHER_KEY: "other-only" } : environment;
+                return {
+                  revision: threadId === otherThreadId ? 10 : revision,
+                  environment: snapshotEnvironment,
+                  redactor: makeSecretRedactor(Object.values(snapshotEnvironment)),
+                };
+              }),
+          }),
+        );
+        const start = (attempt: string) =>
+          harness.runtime.startTurn(
+            makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: DateTime.makeUnsafe("2026-01-01T00:00:00Z"),
+              attemptId: RunAttemptId.make(attempt),
+              text: prompt,
+            }),
+          );
+        yield* start("first");
+        yield* harness.firstTerminal;
+        assert.deepEqual(requests, ["initialize", "thread/start", "turn/start"]);
+        revision++;
+        environment = change === "replace" ? { MY_KEY: "second-value" } : {};
+        const otherProviderThread = yield* harness.runtime.ensureThread({
+          threadId: otherThreadId,
+          modelSelection: CODEX_TEST_MODEL_SELECTION,
+          runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+        });
+        yield* harness.runtime.startTurn(
+          makeCodexTestTurnInput({
+            threadId: otherThreadId,
+            providerThread: otherProviderThread,
+            now: DateTime.makeUnsafe("2026-01-01T00:00:00Z"),
+            attemptId: RunAttemptId.make("other"),
+            text: prompt,
+          }),
+        );
+        yield* start("second");
+        assert.deepEqual(requests, [
+          "initialize",
+          "thread/start",
+          "turn/start",
+          "thread/start",
+          "turn/start",
+          "thread/unsubscribe",
+          "turn/start",
+        ]);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+  );
+
   const BG_NATIVE_THREAD = "native-codex-bg-thread";
   const BG_NATIVE_TURN = "native-codex-bg-turn";
   const BG_COMMAND_ITEM = "call-codex-bg-command";
@@ -6099,4 +6417,166 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       ),
     );
   });
+  it.effect.each(["start", "resume"] as const)(
+    "defers secret refresh during %s until this native thread releases background work",
+    (mode) =>
+      Effect.gen(function* () {
+        let revision = 0;
+        let environment: Record<string, string> = {};
+        const backgroundDone = yield* Deferred.make<void>();
+        const offset = mode === "resume" ? 1 : 0;
+        const transcript = makeCodexReplayTranscript({
+          scenario: "secrets-retained-background-work",
+          entries: [
+            ...backgroundExecTranscript.entries.slice(0, -1),
+            ...(mode === "resume"
+              ? [
+                  {
+                    type: "expect_outbound" as const,
+                    frame: {
+                      id: 4,
+                      method: "thread/resume",
+                      params: {
+                        threadId: BG_NATIVE_THREAD,
+                        excludeTurns: true,
+                        cwd: "/workspace",
+                        model: "gpt-5.4-mini",
+                        config: {
+                          ...CodexAdapterV2.CODEX_THREAD_CONFIG,
+                          "shell_environment_policy.set": { MY_KEY: "saved-value" },
+                        },
+                      },
+                    },
+                  },
+                  {
+                    type: "emit_inbound" as const,
+                    frame: {
+                      id: 4,
+                      result: { thread: { id: BG_NATIVE_THREAD, updatedAt: 1782622465 } },
+                    },
+                  },
+                ]
+              : []),
+            ...codexReplayPreamble({
+              nativeThreadId: BG_NATIVE_THREAD,
+              nativeTurnId: "second",
+              prompt: BG_PROMPT,
+            })
+              .slice(5, 7)
+              .map((entry) => withReplayRequestId(entry, 4 + offset)),
+            {
+              type: "emit_inbound",
+              frame: {
+                method: "turn/completed",
+                params: {
+                  threadId: BG_NATIVE_THREAD,
+                  turn: makeCodexReplayTurn({ id: "second", status: "completed" }),
+                },
+              },
+            },
+            {
+              type: "emit_inbound",
+              frame: {
+                method: "item/completed",
+                params: {
+                  item: backgroundCommandItem("completed"),
+                  threadId: BG_NATIVE_THREAD,
+                  turnId: BG_NATIVE_TURN,
+                  completedAtMs: 1782622465500,
+                },
+              },
+            },
+            {
+              type: "expect_outbound",
+              frame: {
+                id: 5 + offset,
+                method: "thread/unsubscribe",
+                params: { threadId: BG_NATIVE_THREAD },
+              },
+            },
+            { type: "emit_inbound", frame: { id: 5 + offset, result: { status: "unsubscribed" } } },
+            {
+              type: "expect_outbound",
+              frame: {
+                id: 6 + offset,
+                method: "thread/resume",
+                params: {
+                  threadId: BG_NATIVE_THREAD,
+                  excludeTurns: true,
+                  cwd: "/workspace",
+                  model: "gpt-5.4",
+                  config: {
+                    ...CodexAdapterV2.CODEX_THREAD_CONFIG,
+                    "shell_environment_policy.set": { MY_KEY: "saved-value" },
+                  },
+                },
+              },
+            },
+            {
+              type: "emit_inbound",
+              frame: {
+                id: 6 + offset,
+                result: { thread: { id: BG_NATIVE_THREAD, updatedAt: 1782622466 } },
+              },
+            },
+            ...codexReplayPreamble({
+              nativeThreadId: BG_NATIVE_THREAD,
+              nativeTurnId: "third",
+              prompt: BG_PROMPT,
+            })
+              .slice(5, 7)
+              .map((entry) => withReplayRequestId(entry, 7 + offset)),
+          ],
+        });
+        const harness = yield* makeCodexReplayHarness(transcript, (event) =>
+          event.type === "turn_item.updated" &&
+          event.turnItem.type === "command_execution" &&
+          event.turnItem.status === "completed"
+            ? Deferred.succeed(backgroundDone, undefined)
+            : Effect.void,
+        ).pipe(
+          Effect.provideService(AgentSecrets, {
+            redactor: Effect.succeed(makeSecretRedactor([])),
+            snapshot: () =>
+              Effect.sync(() => ({
+                revision,
+                environment,
+                redactor: makeSecretRedactor(Object.values(environment)),
+              })),
+          }),
+        );
+        const start = (attempt: string) =>
+          harness.runtime.startTurn(
+            makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: DateTime.makeUnsafe("2026-01-01T00:00:00Z"),
+              attemptId: RunAttemptId.make(attempt),
+              text: BG_PROMPT,
+            }),
+          );
+        yield* start("first");
+        yield* harness.firstTerminal;
+        assert.isTrue(yield* harness.hasPendingBackgroundWork);
+        revision++;
+        environment = { MY_KEY: "saved-value" };
+        if (mode === "resume") {
+          yield* harness.runtime.resumeThread({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            modelSelection: { ...CODEX_TEST_MODEL_SELECTION, model: "gpt-5.4-mini" },
+            runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+          });
+          assert.isTrue(yield* harness.hasPendingBackgroundWork);
+        }
+        yield* start("second");
+        yield* Deferred.await(backgroundDone);
+        yield* start("third");
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+  );
 });

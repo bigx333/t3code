@@ -1,3 +1,4 @@
+import { ThreadSecretName } from "./threadSecret.ts";
 import * as Schema from "effect/Schema";
 
 import {
@@ -6,7 +7,6 @@ import {
   IsoDateTime,
   ProjectId,
   ScheduledTaskId,
-  SecretRef,
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
@@ -170,9 +170,9 @@ const ScheduledTaskUpsertWebhookSchedule = Schema.Struct({
         secret: Schema.optional(TrimmedNonEmptyString).annotate({
           description: "Shared signing secret. Omit to keep the stored secret.",
         }),
-        secretRef: Schema.optional(SecretRef).annotate({
+        secretName: Schema.optional(ThreadSecretName).annotate({
           description:
-            "A secret the user entered through request_secret, used instead of secret. It is consumed by this save.",
+            "A secret name in the scheduling thread, used instead of secret. Its current value is copied into this task.",
         }),
       }),
     ),

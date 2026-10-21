@@ -1,3 +1,4 @@
+import { withAgentSecrets } from "@t3tools/shared/AgentSecrets";
 import { MspError, type SendUserTurnOptions } from "@muse-code/sdk";
 import {
   MUSE_DEFAULT_MODEL,
@@ -1667,9 +1668,9 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
       const launchHost = Effect.fnUntraced(function* () {
         const epoch = ++hostEpoch;
         const mcpSession = yield* mcpSessions.read(input.threadId);
-        const environment = McpProviderSession.withAgentDeviceEnvironment(
-          options.environment,
-          mcpSession,
+        const environment = yield* withAgentSecrets(
+          McpProviderSession.withAgentDeviceEnvironment(options.environment, mcpSession),
+          input.threadId,
         );
         const launch = yield* agentScope.wrap({
           command: options.settings.binaryPath || "muse",

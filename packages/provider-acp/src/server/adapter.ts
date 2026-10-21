@@ -600,6 +600,7 @@ function negotiatedCapabilities(
 }
 
 interface AcpMcpContext {
+  readonly threadId: ThreadId | undefined;
   readonly servers: ReadonlyArray<EffectAcpSchema.McpServer>;
   readonly acpServers: ReadonlyArray<EffectAcpSchema.McpServer>;
   readonly processEnvironment?: NodeJS.ProcessEnv;
@@ -610,15 +611,17 @@ interface AcpMcpContext {
 function acpMcpContext(
   session: McpProviderSession.McpProviderSessionConfig | undefined,
   self: SelfInvocation,
+  threadId: ThreadId | undefined,
 ): AcpMcpContext {
   if (session === undefined) {
-    return { servers: [], acpServers: [] };
+    return { threadId, servers: [], acpServers: [] };
   }
   // Agents that advertise optional http support still routinely fail to wire
   // injected http servers through to their backend (codex-acp 1.2.0 and pi-acp
   // both drop them), so every ACP session gets the `t3 acp-mcp-bridge` stdio
   // server, which forwards JSON-RPC to T3's authenticated MCP endpoint.
   return {
+    threadId,
     servers: [
       {
         name: "t3-code",
@@ -1376,8 +1379,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
   const { flavor, selfInvocation: self } = options;
   const readMcpContext = (threadId: ThreadId | null) =>
     threadId === null
-      ? Effect.succeed(acpMcpContext(undefined, self))
-      : mcpSessions.read(threadId).pipe(Effect.map((session) => acpMcpContext(session, self)));
+      ? Effect.succeed(acpMcpContext(undefined, self, undefined))
+      : mcpSessions
+          .read(threadId)
+          .pipe(Effect.map((session) => acpMcpContext(session, self, threadId)));
   const driver = flavor.driver;
   const continuationRequests = options.continuationRequests;
   const postSettleContinuationEnabled =
@@ -1423,13 +1428,15 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         const useProviderThreadIdentity = (thread: OrchestrationV2ProviderThread): void => {
           itemIdentityVersion = thread.nativeMetadata?.itemIdentityVersion;
         };
-        const terminalEnvironmentBySessionId = new Map<string, NodeJS.ProcessEnv>();
+        const terminalContextBySessionId = new Map<string, AcpMcpContext>();
         interface PendingTerminalEnvironment {
+          readonly threadId: ThreadId | undefined;
           readonly environment: NodeJS.ProcessEnv | undefined;
           readonly claimUnknownSession: boolean;
           readonly sessionId: string | null;
         }
         let pendingTerminalEnvironment: PendingTerminalEnvironment | null = {
+          threadId: input.threadId,
           environment: (yield* readMcpContext(input.threadId)).processEnvironment,
           claimUnknownSession: input.initialNativeThreadId === undefined,
           sessionId: input.initialNativeThreadId ?? null,
@@ -1439,6 +1446,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           sessionId?: string,
         ): void => {
           pendingTerminalEnvironment = {
+            threadId: mcpContext.threadId,
             environment: mcpContext.processEnvironment,
             claimUnknownSession: false,
             sessionId: sessionId ?? null,
@@ -1446,6 +1454,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         };
         const prepareClaimableTerminalEnvironment = (mcpContext: AcpMcpContext): void => {
           pendingTerminalEnvironment = {
+            threadId: mcpContext.threadId,
             environment: mcpContext.processEnvironment,
             claimUnknownSession: true,
             sessionId: null,
@@ -1455,13 +1464,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           sessionId: string,
           mcpContext: AcpMcpContext,
         ): void => {
-          const environment = mcpContext.processEnvironment;
+          terminalContextBySessionId.set(sessionId, mcpContext);
           pendingTerminalEnvironment = null;
-          if (environment === undefined) {
-            terminalEnvironmentBySessionId.delete(sessionId);
-          } else {
-            terminalEnvironmentBySessionId.set(sessionId, environment);
-          }
         };
         const clientTerminals: AcpClientTerminals | undefined =
           options.clientTerminals === undefined
@@ -1470,9 +1474,15 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 defaultCwd: input.runtimePolicy.cwd ?? process.cwd(),
                 environment: options.clientTerminals.environment,
                 shellCommands: options.clientTerminals.shellCommands,
+                threadForSession: (sessionId) =>
+                  terminalContextBySessionId.has(sessionId)
+                    ? terminalContextBySessionId.get(sessionId)?.threadId
+                    : pendingTerminalEnvironment?.sessionId === sessionId
+                      ? pendingTerminalEnvironment.threadId
+                      : undefined,
                 environmentForSession: (sessionId) => {
-                  const remembered = terminalEnvironmentBySessionId.get(sessionId);
-                  if (remembered !== undefined) return remembered;
+                  const remembered = terminalContextBySessionId.get(sessionId);
+                  if (remembered !== undefined) return remembered.processEnvironment;
                   if (pendingTerminalEnvironment === null) return undefined;
                   if (
                     pendingTerminalEnvironment.sessionId === null &&

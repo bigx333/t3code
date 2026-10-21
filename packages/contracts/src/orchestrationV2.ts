@@ -1,3 +1,4 @@
+import { ThreadSecretName } from "./threadSecret.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -1329,6 +1330,7 @@ export type OrchestrationV2SecretRequestStatus = typeof OrchestrationV2SecretReq
 
 const OrchestrationV2SecretRequestFields = {
   type: Schema.Literal("secret_request"),
+  name: Schema.optional(ThreadSecretName),
   label: TrimmedNonEmptyString,
   reason: Schema.String,
   placeholder: Schema.optional(Schema.String),
@@ -3062,6 +3064,7 @@ const OrchestrationV2InternalCommand = Schema.Union([
    */
   Schema.Struct({
     type: Schema.Literal("secret_request.record"),
+    name: Schema.optional(ThreadSecretName),
     commandId: CommandId,
     threadId: ThreadId,
     runId: RunId,

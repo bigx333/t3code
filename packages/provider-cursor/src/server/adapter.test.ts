@@ -1,3 +1,5 @@
+import { AgentSecrets } from "@t3tools/shared/AgentSecrets";
+import { makeSecretRedactor } from "@t3tools/shared/secretRedaction";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import type { InteractionUpdate } from "@cursor/sdk";
@@ -1262,4 +1264,158 @@ describe("CursorAdapterV2", () => {
       },
     );
   });
+  it.effect.each(["saved", "removed", "removed-at-completion"] as const)(
+    "refreshes %s thread secrets before trimming streamed shell output",
+    (mode) => {
+      let redactor = makeSecretRedactor(["cursor-secret", "cursor-secret-longer"]);
+      return Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const workspace = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "cursor-v2-search-",
+        });
+        const instanceId = ProviderInstanceId.make("cursor");
+        const threadId = ThreadId.make("cursor-search-thread");
+        const modelSelection = { instanceId, model: "composer-2.5" };
+        const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: workspace,
+        });
+        const toolCall = { type: "shell" as const, args: { command: "print token" } };
+        const updates: ReadonlyArray<InteractionUpdate> = [
+          { type: "tool-call-started", modelCallId: "model", callId: "shell", toolCall },
+          { type: "shell-output-delta", event: { text: "cursor-secret" } },
+          ...(mode === "removed-at-completion"
+            ? []
+            : [
+                {
+                  type: "shell-output-delta" as const,
+                  event: { text: "x".repeat(256 * 1024 - 6) },
+                },
+              ]),
+          { type: "tool-call-completed", modelCallId: "model", callId: "shell", toolCall },
+        ];
+        const adapter = yield* makeCursorAdapterV2({
+          instanceId,
+          settings: yield* decodeCursorSettings({}),
+          environment: { HOME: workspace },
+        }).pipe(
+          Effect.provideService(CursorAgentSdk.CursorAgentSdkRunner, {
+            assertComplete: Effect.void,
+            open: () =>
+              Effect.succeed({
+                agentId: "native-cursor-search",
+                listMessages: Effect.succeed([]),
+                close: Effect.void,
+                send: (input) =>
+                  Effect.gen(function* () {
+                    for (const update of updates) {
+                      if (input.onDelta !== undefined) {
+                        yield* input.onDelta(update).pipe(Effect.orDie);
+                        if (mode !== "saved" && update.type === "shell-output-delta") {
+                          redactor = makeSecretRedactor([]);
+                        }
+                      }
+                    }
+                    return {
+                      agentId: "native-cursor-search",
+                      runId: "native-cursor-run",
+                      wait: Effect.succeed({
+                        id: "native-cursor-run",
+                        requestId: "native-request",
+                        status: "finished" as const,
+                        model: { id: "composer-2.5" },
+                        durationMs: 1,
+                      }),
+                      cancel: Effect.void,
+                    };
+                  }),
+              }),
+          }),
+          Effect.provide(TestProviderHost.layer({ cwd: workspace })),
+        );
+        const runtime = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("cursor-search-session"),
+          modelSelection,
+          runtimePolicy,
+        });
+        const providerThread = yield* runtime.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const now = yield* DateTime.now;
+        yield* runtime.startTurn({
+          threadId,
+          providerThread,
+          modelSelection,
+          runtimePolicy,
+          runId: RunId.make("cursor-search-run"),
+          runOrdinal: 1,
+          providerTurnOrdinal: 1,
+          attemptId: RunAttemptId.make("cursor-search-attempt"),
+          rootNodeId: NodeId.make("cursor-search-root"),
+          appThread: {
+            id: threadId,
+            projectId: ProjectId.make("cursor-search-project"),
+            createdBy: "user",
+            creationSource: "web",
+            title: "Cursor search results",
+            providerInstanceId: instanceId,
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            activeProviderThreadId: providerThread.id,
+            lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+            forkedFrom: null,
+            createdAt: now,
+            updatedAt: now,
+            archivedAt: null,
+            settledOverride: null,
+            settledAt: null,
+            lastVisitedAt: null,
+            deletedAt: null,
+          },
+          message: {
+            messageId: MessageId.make("cursor-search-message"),
+            createdBy: "user",
+            creationSource: "web",
+            text: "inspect the workspace",
+            attachments: [],
+          },
+        });
+        const events = yield* runtime.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runCollect,
+        );
+        const completed = events.flatMap((event) =>
+          event.type === "turn_item.updated" &&
+          event.turnItem.type === "command_execution" &&
+          event.turnItem.status === "completed"
+            ? [event.turnItem]
+            : [],
+        );
+        assert.lengthOf(completed, 1);
+        if (mode === "saved") assert.notInclude(completed[0]!.output ?? "", "secret");
+        else assert.include(completed[0]!.output ?? "", "secret");
+        if (mode === "removed-at-completion") assert.equal(completed[0]!.output, "cursor-secret");
+        else assert.equal(completed[0]!.output?.length, 256 * 1024);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer),
+        ),
+        Effect.provideService(AgentSecrets, {
+          redactor: Effect.succeed(makeSecretRedactor(["other-secret"])),
+          snapshot: (threadId) => {
+            assert.equal(threadId, "cursor-search-thread");
+            return Effect.succeed({ revision: 1, environment: {}, redactor });
+          },
+        }),
+      );
+    },
+  );
 });

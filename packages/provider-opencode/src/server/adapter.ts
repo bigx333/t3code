@@ -1,3 +1,4 @@
+import { withAgentSecrets } from "@t3tools/shared/AgentSecrets";
 import type {
   Event as OpenCodeEvent,
   Message as OpenCodeMessage,
@@ -945,7 +946,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           binaryPath: options.settings.binaryPath,
           directory: cwd,
           serverUrl: options.settings.serverUrl,
-          environment: options.environment,
+          environment: yield* withAgentSecrets(options.environment, input.threadId),
         });
         const client = runtime.createOpenCodeSdkClient({
           baseUrl: connection.url,

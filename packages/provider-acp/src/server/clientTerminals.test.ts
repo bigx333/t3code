@@ -1,3 +1,6 @@
+import { AgentSecrets } from "@t3tools/shared/AgentSecrets";
+import { ThreadId } from "@t3tools/contracts";
+import { makeSecretRedactor } from "@t3tools/shared/secretRedaction";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -14,11 +17,120 @@ const withTerminals = <A, E>(use: (terminals: AcpClientTerminals) => Effect.Effe
   Effect.gen(function* () {
     const terminals = yield* makeAcpClientTerminals({
       defaultCwd: process.cwd(),
+      threadForSession: (sessionId) => ThreadId.make(sessionId),
     });
     return yield* use(terminals).pipe(Effect.ensuring(terminals.disposeAll));
   }).pipe(Effect.provide(NodeServices.layer), Effect.scoped);
 
 describe("AcpClientTerminals", () => {
+  it.effect("isolates terminal injection and redaction by the creating session's thread", () =>
+    Effect.gen(function* () {
+      const threadA = ThreadId.make("thread-a");
+      const threadB = ThreadId.make("thread-b");
+      const terminals = yield* makeAcpClientTerminals({
+        defaultCwd: process.cwd(),
+        threadForSession: (sessionId) =>
+          sessionId === "a" ? threadA : sessionId === "b" ? threadB : undefined,
+      });
+      yield* Effect.gen(function* () {
+        for (const [sessionId, expected] of [
+          ["a", "[REDACTED]|missing|[REDACTED]|b-secret"],
+          ["b", "missing|[REDACTED]|a-secret|[REDACTED]"],
+          ["unknown", "missing|missing|a-secret|b-secret"],
+        ] as const) {
+          const { terminalId } = yield* terminals.create({
+            sessionId,
+            command: process.execPath,
+            args: [
+              "-e",
+              'process.stdout.write([process.env.A_SECRET ?? "missing", process.env.B_SECRET ?? "missing", "a-secret", "b-secret"].join("|"))',
+            ],
+          });
+          yield* terminals.waitForExit({ sessionId, terminalId });
+          expect((yield* terminals.output({ sessionId, terminalId })).output).toBe(expected);
+          expect(terminals.readOutputSnapshot(sessionId, terminalId)?.output).toBe(expected);
+        }
+      }).pipe(Effect.ensuring(terminals.disposeAll));
+    }).pipe(
+      Effect.provideService(AgentSecrets, {
+        snapshot: (threadId) => {
+          const environment: Record<string, string> =
+            threadId === "thread-a"
+              ? { A_SECRET: "a-secret" }
+              : threadId === "thread-b"
+                ? { B_SECRET: "b-secret" }
+                : {};
+          return Effect.succeed({
+            revision: 1,
+            environment,
+            redactor: makeSecretRedactor(Object.values(environment)),
+          });
+        },
+        redactor: Effect.succeed(makeSecretRedactor(["a-secret", "b-secret"])),
+      }),
+      Effect.provide(NodeServices.layer),
+      Effect.scoped,
+    ),
+  );
+
+  it.effect(
+    "injects secrets after request env and redacts terminal output returned to the agent",
+    () =>
+      withTerminals((terminals) =>
+        Effect.gen(function* () {
+          const sessionId = "session-secrets";
+          const created = yield* terminals.create({
+            sessionId,
+            command: process.execPath,
+            args: ["-e", "process.stdout.write(process.env.TEST_SECRET ?? '')"],
+            env: [{ name: "TEST_SECRET", value: "request" }],
+          });
+          yield* terminals.waitForExit({ sessionId, terminalId: created.terminalId });
+          const result = yield* terminals.output({ sessionId, terminalId: created.terminalId });
+          expect(result.output).toBe("[REDACTED]");
+        }),
+      ).pipe(
+        Effect.provideService(AgentSecrets, {
+          redactor: Effect.succeed(makeSecretRedactor([])),
+          snapshot: () =>
+            Effect.succeed({
+              revision: 1,
+              environment: { TEST_SECRET: "terminal-secret" },
+              redactor: makeSecretRedactor(["terminal-secret"]),
+            }),
+        }),
+      ),
+  );
+
+  it.effect("redacts terminal chunks before the output byte limit discards a secret prefix", () =>
+    withTerminals((terminals) =>
+      Effect.gen(function* () {
+        const sessionId = "trim-secret";
+        const { terminalId } = yield* terminals.create({
+          sessionId,
+          command: process.execPath,
+          args: ["-e", 'process.stdout.write("terminal-"); process.stdout.write("secret")'],
+          outputByteLimit: 5,
+        });
+        yield* terminals.waitForExit({ sessionId, terminalId });
+        const result = yield* terminals.output({ sessionId, terminalId });
+        expect(result.output).toBe("CTED]");
+        expect(result.truncated).toBe(true);
+        expect(terminals.readOutputSnapshot(sessionId, terminalId)?.output).toBe("CTED]");
+      }),
+    ).pipe(
+      Effect.provideService(AgentSecrets, {
+        redactor: Effect.succeed(makeSecretRedactor([])),
+        snapshot: () =>
+          Effect.succeed({
+            revision: 1,
+            environment: {},
+            redactor: makeSecretRedactor(["terminal-secret"]),
+          }),
+      }),
+    ),
+  );
+
   it.effect("runs a command, buffers output, and reports the exit status", () =>
     withTerminals((terminals) =>
       Effect.gen(function* () {

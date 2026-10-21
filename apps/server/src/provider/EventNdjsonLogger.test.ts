@@ -1,3 +1,5 @@
+import { AgentSecrets } from "@t3tools/shared/AgentSecrets";
+import { emptySecretRedactor, makeSecretRedactor } from "@t3tools/shared/secretRedaction";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -52,6 +54,109 @@ function parseLogLine(line: string) {
 }
 
 it.layer(NodeServices.layer)("EventNdjsonLogger", (it) => {
+  it.effect("redacts serialized lines using the latest secrets", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-secret-log-" });
+      const basePath = NodePath.join(directory, "provider.log");
+      const store = yield* makeEventNdjsonLogStore(basePath, { batchWindowMs: 0 });
+      yield* store.logger("native").write({ method: "test", output: 'literal/"secret' }, null);
+      yield* store.close();
+      const content = yield* fs.readFileString(ownedLogPath(basePath, "_global"));
+      assert.notInclude(content, "secret");
+      assert.include(content, "[REDACTED]");
+    }).pipe(
+      Effect.provideService(AgentSecrets, {
+        snapshot: () =>
+          Effect.succeed({ revision: 0, environment: {}, redactor: emptySecretRedactor }),
+        redactor: Effect.succeed(makeSecretRedactor(['literal/"secret'])),
+      }),
+    ),
+  );
+
+  it.effect("redacts JSON text before the native log adds another escaping layer", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-secret-log-" });
+      const basePath = NodePath.join(directory, "provider.log");
+      const store = yield* makeEventNdjsonLogStore(basePath, { batchWindowMs: 0 });
+      yield* store
+        .logger("native")
+        .write({ output: JSON.stringify({ token: 'alpha"beta' }) }, null);
+      yield* store.close();
+      const content = yield* fs.readFileString(ownedLogPath(basePath, "_global"));
+      assert.deepEqual(decodeUnknownJson(parseLogLine(content.trim()).payload), {
+        output: JSON.stringify({ token: "[REDACTED]" }),
+      });
+    }).pipe(
+      Effect.provideService(AgentSecrets, {
+        snapshot: () =>
+          Effect.succeed({ revision: 0, environment: {}, redactor: emptySecretRedactor }),
+        redactor: Effect.succeed(makeSecretRedactor(['alpha"beta'])),
+      }),
+    ),
+  );
+
+  it.effect(
+    "uses current native masks and thread-local canonical masks after replacement and deletion",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-thread-secret-log-" });
+        const basePath = NodePath.join(directory, "provider.log");
+        const threadA = ThreadId.make("thread-a");
+        const threadB = ThreadId.make("thread-b");
+        let valuesA = ["alpha-token"];
+        yield* Effect.gen(function* () {
+          const store = yield* makeEventNdjsonLogStore(basePath, { batchWindowMs: 0 });
+          const event = { output: "alpha-token bravo-token charlie-token" };
+          yield* store.logger("native").write(event, null);
+          yield* store.logger("canonical").write(event, threadA);
+          yield* store.logger("canonical").write(event, threadB);
+          yield* store.logger("orchestration").write(event, null);
+          valuesA = ["charlie-token"];
+          yield* store.logger("native").write(event, null);
+          yield* store.logger("canonical").write(event, threadA);
+          valuesA = [];
+          yield* store.logger("native").write(event, null);
+          yield* store.logger("canonical").write(event, threadA);
+          yield* store.close();
+          const outputs = Effect.fnUntraced(function* (segment: string) {
+            return (yield* fs.readFileString(ownedLogPath(basePath, segment)))
+              .trim()
+              .split("\n")
+              .map((line) => decodeUnknownJson(parseLogLine(line).payload));
+          });
+          assert.deepEqual(yield* outputs("_global"), [
+            { output: "[REDACTED] [REDACTED] charlie-token" },
+            event,
+            { output: "alpha-token [REDACTED] [REDACTED]" },
+            { output: "alpha-token [REDACTED] charlie-token" },
+          ]);
+          assert.deepEqual(yield* outputs("thread-a"), [
+            { output: "[REDACTED] bravo-token charlie-token" },
+            { output: "alpha-token bravo-token [REDACTED]" },
+            event,
+          ]);
+          assert.deepEqual(yield* outputs("thread-b"), [
+            { output: "alpha-token [REDACTED] charlie-token" },
+          ]);
+        }).pipe(
+          Effect.provideService(AgentSecrets, {
+            snapshot: (threadId) =>
+              Effect.sync(() => ({
+                revision: 0,
+                environment: {},
+                redactor: makeSecretRedactor(
+                  threadId === threadA ? valuesA : threadId === threadB ? ["bravo-token"] : [],
+                ),
+              })),
+            redactor: Effect.sync(() => makeSecretRedactor([...valuesA, "bravo-token"])),
+          }),
+        );
+      }),
+  );
+
   it.effect("summarizes circular events without exposing their contents in diagnostics", () => {
     const messages: Array<unknown> = [];
     const logCapture = Logger.make<unknown, void>(({ message }) => {

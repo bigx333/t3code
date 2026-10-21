@@ -46,7 +46,7 @@ import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as Metrics from "../observability/Metrics.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
-import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as ThreadSecrets from "../secrets/ThreadSecrets.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import { isMissedFixedTimeRun, isSameSchedule, nextScheduledRunAt } from "./Schedule.ts";
 import {
@@ -230,6 +230,7 @@ export class ScheduledTaskService extends Context.Service<
     readonly subscribeList: () => Stream.Stream<ScheduledTaskListResult, ScheduledTaskError>;
     readonly upsert: (
       input: ScheduledTaskUpsertInput,
+      secretThreadId?: ThreadId | null,
     ) => Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError>;
     readonly setEnabled: (
       input: ScheduledTaskSetEnabledInput,
@@ -404,7 +405,7 @@ export const layer = Layer.effect(
     const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
     const threadManagement = yield* ThreadManagementService.ThreadManagementService;
     const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
-    const secretRequests = yield* SecretRequests.SecretRequests;
+    const threadSecrets = yield* ThreadSecrets.ThreadSecrets;
     const scheduler = yield* Scheduler.Scheduler;
     const readWebhookOrigin = yield* ScheduledTaskWebhookOrigin;
     const webhookPermits = yield* Ref.make<ReadonlyMap<ScheduledTaskId, Semaphore.Semaphore>>(
@@ -1056,7 +1057,7 @@ export const layer = Layer.effect(
 
     const upsert: ScheduledTaskService["Service"]["upsert"] = Effect.fn(
       "ScheduledTaskService.upsert",
-    )(function* (input) {
+    )(function* (input, secretThreadId) {
       const now = yield* localNow;
       const uuid =
         input.commandId === undefined
@@ -1115,25 +1116,30 @@ export const layer = Layer.effect(
               const existing = existingTask === null ? null : yield* findWebhookCredentials(id);
               const token = existing?.token ?? (yield* newWebhookToken);
               const signature = input.schedule.type === "webhook" ? input.schedule.signature : null;
-              // A secretRef is a value the user entered for an agent; this
-              // save consumes it, so it cannot be used again. A replay of a
-              // save that already used it keeps the secret that save stored.
-              const replay = input.commandId !== undefined && existing?.secret != null;
-              const fromRef =
-                signature?.secretRef === undefined
+              const signingThreadId =
+                secretThreadId === undefined ? input.threadId : secretThreadId;
+              const fromName =
+                signature?.secretName === undefined
                   ? undefined
-                  : yield* secretRequests
-                      .consume({ ref: signature.secretRef, projectId: input.projectId })
-                      .pipe(
-                        Effect.catch((error) =>
-                          replay
-                            ? Effect.succeed(undefined)
-                            : Effect.fail(taskError(error.message, { taskId: id })),
-                        ),
-                      );
-              // A ref, when given, is the only source: a plain secret sent
-              // alongside it must not replace what a replayed save stored.
-              const provided = signature?.secretRef === undefined ? signature?.secret : fromRef;
+                  : yield* (
+                      signingThreadId != null
+                        ? threadSecrets.get(signingThreadId, signature.secretName)
+                        : Effect.succeedNone
+                    ).pipe(
+                      Effect.flatMap(
+                        Option.match({
+                          onNone: () =>
+                            Effect.fail(
+                              taskError(
+                                `Thread secret ${signature.secretName} does not exist for the scheduling thread. Save it before configuring this webhook.`,
+                                { taskId: id },
+                              ),
+                            ),
+                          onSome: Effect.succeed,
+                        }),
+                      ),
+                    );
+              const provided = signature?.secretName === undefined ? signature?.secret : fromName;
               const secret = signature == null ? null : (provided ?? existing?.secret ?? null);
               const secretChanged =
                 signature == null || provided !== undefined || existing === null;

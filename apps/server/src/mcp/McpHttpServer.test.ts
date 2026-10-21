@@ -1,3 +1,25 @@
+import * as PreviewBrowser from "../preview/PreviewBrowser.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as SourceControlRepositoryService from "../sourceControl/SourceControlRepositoryService.ts";
+import * as PreviewManager from "../preview/Manager.ts";
+import * as ThreadSearch from "../orchestration-v2/ThreadSearch.ts";
+import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
+import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import * as VcsStatusBroadcaster from "../vcs/VcsStatusBroadcaster.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as ThreadSecrets from "../secrets/ThreadSecrets.ts";
+import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
+import * as GitWorkflowService from "../git/GitWorkflowService.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
+import * as DeviceService from "../device/DeviceService.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { expect, it } from "@effect/vitest";
@@ -761,4 +783,109 @@ it.effect("admits provider and OAuth client credentials and points only clients 
       expect(deadProvider.headers["www-authenticate"]).toBe('Bearer error="invalid_token"');
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+const layerProductionMcpStubs = Layer.mergeAll(
+  Layer.mock(Orchestrator.OrchestratorV2)({}),
+  Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
+  Layer.mock(DeviceService.DeviceService)({}),
+  Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+  Layer.mock(ProjectStore.ProjectStoreV2)({}),
+  Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({}),
+  Layer.mock(ProviderRegistry.ProviderRegistry)({}),
+  Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),
+  Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+  Layer.mock(ThreadSecrets.ThreadSecrets)({}),
+  Layer.mock(ProjectService.ProjectService)({}),
+  Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
+  ServerSettings.layerTest({}),
+  Layer.mock(GitWorkflowService.GitWorkflowService)({}),
+  Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({}),
+  Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({}),
+  Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+  Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/unused" }),
+  Layer.mock(PreviewManager.PreviewManager)({}),
+  Layer.mock(ServerSecretStore.ServerSecretStore)({}),
+  Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({}),
+  Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+  Layer.mock(ThreadSearch.ThreadSearch)({}),
+  McpProviderSessions.layer,
+);
+
+const decodeProductionTools = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      result: Schema.Struct({ tools: Schema.Array(Schema.Struct({ name: Schema.String })) }),
+    }),
+  ),
+);
+
+it.effect("publishes the thread-secret shell through the production HTTP MCP layer", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* HttpRouter.serve(McpHttpServer.layer, {
+        disableListenLog: true,
+        disableLogger: true,
+      }).pipe(
+        Layer.provide(PreviewAutomationBroker.layer),
+        Layer.provide(PreviewBrowser.layer),
+        Layer.provide(layerProductionMcpStubs),
+        Layer.build,
+      );
+
+      const registry = yield* McpSessionRegistry.McpSessionRegistry;
+      const credential = yield* registry.issue({
+        threadId: ThreadId.make("thread-secret-shell"),
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      });
+
+      const httpClient = yield* HttpClient.HttpClient;
+      const auth = credential.config.authorizationHeader;
+      const initResponse = yield* httpClient.post("/mcp", {
+        headers: {
+          accept: "application/json, text/event-stream",
+          authorization: auth,
+        },
+        body: HttpBody.text(
+          `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"scratch","version":"1.0.0"}}}`,
+          "application/json",
+        ),
+      });
+      expect(initResponse.status).toBe(200);
+      const sessionId = initResponse.headers["mcp-session-id"];
+
+      const listResponse = yield* httpClient.post("/mcp", {
+        headers: {
+          accept: "application/json, text/event-stream",
+          authorization: auth,
+          "mcp-protocol-version": "2025-06-18",
+          ...(sessionId ? { "mcp-session-id": sessionId } : {}),
+        },
+        body: HttpBody.text(
+          `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`,
+          "application/json",
+        ),
+      });
+      const bodyText = yield* listResponse.text;
+      const payload = yield* decodeProductionTools(bodyText.match(/\{.*\}/s)![0]);
+      expect(payload.result.tools.map((tool) => tool.name)).toContain("t3_secret_shell");
+    }),
+  ).pipe(
+    Effect.provide(
+      McpSessionRegistry.layer.pipe(
+        Layer.provideMerge(
+          Layer.mergeAll(
+            NodeHttpServer.layerTest,
+            Layer.mock(ServerEnvironment.ServerEnvironment)({
+              getEnvironmentId: Effect.succeed(EnvironmentId.make("environment-secret-shell")),
+            }),
+            ServerConfig.layerTest(process.cwd(), { prefix: "t3-secret-shell-discovery-" }).pipe(
+              Layer.provide(NodeServices.layer),
+            ),
+            NodeServices.layer,
+          ),
+        ),
+      ),
+    ),
+  ),
 );

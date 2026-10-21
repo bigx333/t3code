@@ -1,6 +1,12 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect's Crypto digest is effectful; a sync hash keeps historyPath a plain function.
 import * as NodeCrypto from "node:crypto";
 
+import {
+  makeSecretStreamRedactor,
+  type SecretRedactor,
+  type SecretStreamRedactor,
+} from "@t3tools/shared/secretRedaction";
+import { AgentSecrets, withAgentSecrets } from "@t3tools/shared/AgentSecrets";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import {
   DEFAULT_TERMINAL_ID,
@@ -35,6 +41,7 @@ import {
   ClaudeSettings,
   CodexSettings,
   ProviderInstanceId,
+  ThreadId,
 } from "@t3tools/contracts";
 import { makeKeyedCoalescingWorker } from "@t3tools/shared/KeyedCoalescingWorker";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
@@ -292,10 +299,12 @@ interface PersistHistoryRequest {
 
 type PendingProcessEvent =
   | { type: "output"; data: string }
+  | { type: "flush"; stream: SecretStreamRedactor; version: number }
   | { type: "exit"; event: PtyAdapter.PtyExitEvent };
 
 type DrainProcessEventAction =
   | { type: "idle" }
+  | { type: "held" }
   | {
       type: "output";
       threadId: string;
@@ -1516,6 +1525,57 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   const platform = yield* HostProcess.Platform;
   const architecture = yield* HostProcess.Architecture;
   const agentScope = yield* AgentScope;
+  const agentSecrets = yield* AgentSecrets;
+  const outputRedactors = new WeakMap<
+    TerminalSessionState,
+    {
+      redactor: SecretRedactor;
+      stream: SecretStreamRedactor;
+      version: number;
+      fiber: Fiber.Fiber<void> | null;
+    }
+  >();
+  const redactOutput = (session: TerminalSessionState, data: string, redactor: SecretRedactor) => {
+    let state = outputRedactors.get(session);
+    if (redactor.isEmpty && state === undefined) return data;
+    let pending = "";
+    if (state?.redactor !== redactor) {
+      pending = state?.stream.flush(redactor) ?? "";
+      if (state === undefined) {
+        state = { redactor, stream: makeSecretStreamRedactor(redactor), version: 0, fiber: null };
+      } else {
+        state.redactor = redactor;
+        state.stream = makeSecretStreamRedactor(redactor);
+      }
+      outputRedactors.set(session, state);
+    }
+    state.version++;
+    return state.stream.push(pending + data);
+  };
+  const flushOutput = Effect.fnUntraced(function* (
+    session: TerminalSessionState,
+    expectedPid = session.pid,
+  ) {
+    const { redactor } = yield* agentSecrets.snapshot(ThreadId.make(session.threadId));
+    if (session.pid !== expectedPid) return;
+    const state = outputRedactors.get(session);
+    outputRedactors.delete(session);
+    if (state?.fiber != null) yield* Fiber.interrupt(state.fiber);
+    const data = state?.stream.flush(redactor) ?? "";
+    if (data.length === 0) return;
+    const sanitized = sanitizeTerminalHistoryChunk(session.pendingHistoryControlSequence, data);
+    session.pendingHistoryControlSequence = sanitized.pendingControlSequence;
+    session.history.append(sanitized.visibleText);
+    if (sanitized.visibleText.length > 0)
+      yield* queuePersist(session.threadId, session.terminalId, session.history);
+    yield* publishEvent({
+      type: "output",
+      threadId: session.threadId,
+      terminalId: session.terminalId,
+      sequence: advanceEventSequence(session).sequence,
+      data,
+    });
+  });
   // Terminals must inherit the user's full environment (minus the blocklist
   // applied in createTerminalSpawnEnv) — an allowlist here silently strips
   // things like PSModulePath, DISPLAY, proxies, and toolchain variables.
@@ -2074,11 +2134,41 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     },
   );
 
+  const scheduleOutputFlush = Effect.fnUntraced(function* (
+    session: TerminalSessionState,
+    expectedPid: number,
+  ) {
+    const state = outputRedactors.get(session);
+    if (state === undefined) return;
+    if (state.fiber !== null) yield* Fiber.interrupt(state.fiber);
+    state.fiber = null;
+    if (!state.stream.hasPending) return;
+    const { stream, version } = state;
+    state.fiber = yield* Effect.sleep("30 millis").pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          state.fiber = null;
+          if (enqueueProcessEvent(session, expectedPid, { type: "flush", stream, version })) {
+            runFork(drainProcessEvents(session, expectedPid));
+          }
+        }),
+      ),
+      Effect.forkIn(workerScope),
+    );
+  });
+
   const drainProcessEvents = Effect.fn("terminal.drainProcessEvents")(function* (
     session: TerminalSessionState,
     expectedPid: number,
   ) {
     while (true) {
+      const { redactor } = yield* agentSecrets.snapshot(ThreadId.make(session.threadId));
+      const queuedEvent = session.pendingProcessEvents[session.pendingProcessEventIndex];
+      if (
+        session.pid === expectedPid &&
+        session.pendingProcessEvents[session.pendingProcessEventIndex]?.type === "exit"
+      )
+        yield* flushOutput(session, expectedPid);
       const action: DrainProcessEventAction = yield* Effect.sync(() => {
         if (session.pid !== expectedPid || !session.process || session.status !== "running") {
           session.pendingProcessEvents = [];
@@ -2101,10 +2191,18 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           session.pendingProcessEventIndex = 0;
         }
 
-        if (nextEvent.type === "output") {
+        if (nextEvent.type === "output" || nextEvent.type === "flush") {
+          const state = outputRedactors.get(session);
+          const data =
+            nextEvent.type === "output"
+              ? redactOutput(session, nextEvent.data, redactor)
+              : state?.stream === nextEvent.stream && state.version === nextEvent.version
+                ? state.stream.flush(redactor)
+                : "";
+          if (data.length === 0) return { type: "held" } as const;
           const sanitized = sanitizeTerminalHistoryChunk(
             session.pendingHistoryControlSequence,
-            nextEvent.data,
+            data,
           );
           session.pendingHistoryControlSequence = sanitized.pendingControlSequence;
           if (sanitized.visibleText.length > 0) {
@@ -2118,7 +2216,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
             terminalId: session.terminalId,
             sequence: eventStamp.sequence,
             history: sanitized.visibleText.length > 0 ? session.history : null,
-            data: nextEvent.data,
+            data,
           } as const;
         }
 
@@ -2152,6 +2250,8 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         } as const;
       });
 
+      if (queuedEvent?.type === "output") yield* scheduleOutputFlush(session, expectedPid);
+      if (action.type === "held") continue;
       if (action.type === "idle") {
         return;
       }
@@ -2193,6 +2293,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     const process = session.process;
     if (!process) return;
 
+    yield* flushOutput(session);
     const updatedAt = yield* nowIso;
     yield* modifyManagerState((state) => {
       cleanupProcessHandles(session);
@@ -2319,11 +2420,14 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         Effect.andThen(
           Effect.gen(function* () {
             const shellCandidates = resolveShellCandidates(shellResolver, platform, baseEnv);
-            const terminalEnv = createTerminalSpawnEnv(
-              baseEnv,
-              session.runtimeEnv,
-              platform,
-              yield* HostProcess.HomeDirectory,
+            const terminalEnv = yield* withAgentSecrets(
+              createTerminalSpawnEnv(
+                baseEnv,
+                session.runtimeEnv,
+                platform,
+                yield* HostProcess.HomeDirectory,
+              ),
+              ThreadId.make(session.threadId),
             );
             // Append (never prepend) managed ACP agent install directories so
             // `kimi login` and friends resolve by name without shadowing any

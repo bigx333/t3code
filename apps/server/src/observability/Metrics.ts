@@ -97,11 +97,11 @@ export const webhookRunsTotal = Metric.counter("t3_webhook_runs_total", {
 });
 
 export const secretRequestsTotal = Metric.counter("t3_secret_requests_total", {
-  description: "Secrets agents asked users for, by how each request ended.",
+  description: "Secret requests answered by users, by status.",
 });
 
-export const secretRefsConsumedTotal = Metric.counter("t3_secret_refs_consumed_total", {
-  description: "Secret refs tools tried to use, by result.",
+export const threadSecretsTotal = Metric.counter("t3_thread_secrets_total", {
+  description: "Thread secrets set or removed, by operation.",
 });
 
 export const metricAttributes = (

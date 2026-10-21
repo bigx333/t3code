@@ -25,7 +25,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
-import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as ThreadSecrets from "../secrets/ThreadSecrets.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
@@ -209,7 +209,7 @@ it.effect(
                   isScratchProject: () => Effect.succeed(false),
                 }),
                 Layer.mock(ThreadManagementService.ThreadManagementService)({}),
-                Layer.mock(SecretRequests.SecretRequests)({}),
+                Layer.mock(ThreadSecrets.ThreadSecrets)({}),
                 NodeCrypto.layer,
                 Scheduler.layer,
               ),
@@ -307,7 +307,7 @@ it.effect(
                   isScratchProject: () => Effect.succeed(false),
                 }),
                 Layer.mock(ThreadManagementService.ThreadManagementService)({}),
-                Layer.mock(SecretRequests.SecretRequests)({}),
+                Layer.mock(ThreadSecrets.ThreadSecrets)({}),
                 NodeCrypto.layer,
                 Scheduler.layer,
               ),
@@ -357,7 +357,7 @@ it.effect("thread cleanup notifies subscribers and a finishing run cannot recrea
                 Effect.andThen(Effect.die("test dispatch failure")),
               ),
           }),
-          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(ThreadSecrets.ThreadSecrets)({}),
           Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
             namedProjectsRoot: "/projects",
             isScratchProject: () => Effect.succeed(false),

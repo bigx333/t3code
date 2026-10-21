@@ -7,6 +7,20 @@ function completed(input: unknown, output?: unknown): T3ToolSummaryCall {
 }
 
 describe("summarizeT3ToolCalls", () => {
+  it("summarizes commands using thread secrets without including their input or output", () => {
+    expect(
+      summarizeT3ToolCalls("secret-shell", [
+        completed({ command: "private-command" }, { stdout: "private-output" }),
+        completed({ command: "another-private-command" }),
+      ]),
+    ).toEqual({ label: "Ran 2 commands with thread secrets", failedCount: 0 });
+    expect(
+      summarizeT3ToolCalls("secret-shell", [
+        { input: { command: "private-command" }, output: undefined, outcome: "failed" },
+      ]),
+    ).toEqual({ label: "Tried to run 1 command with thread secrets", failedCount: 1 });
+  });
+
   it("reads provider result envelopes without treating JSON in the message as result data", () => {
     const result = { messageId: "message-1", threadId: "actual-thread" };
     const json = JSON.stringify(result);

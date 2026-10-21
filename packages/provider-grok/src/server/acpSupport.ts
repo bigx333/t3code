@@ -16,6 +16,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { normalizeModelSlug } from "@t3tools/shared/model";
 
 import * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
+import { GROK_TOOL_OUTPUT_HOOK_URL_ENV, type GrokToolOutputHook } from "./toolOutputHook.ts";
 import { makeXAiPromptCompletionRuntime } from "./xaiAcpExtension.ts";
 
 const GROK_API_KEY_ENV = "XAI_API_KEY";
@@ -34,6 +35,7 @@ interface GrokAcpRuntimeInput extends Omit<
   readonly grokSettings: GrokAcpRuntimeGrokSettings | null | undefined;
   readonly environment?: NodeJS.ProcessEnv;
   readonly runtimeMode?: RuntimeMode;
+  readonly toolOutputHook?: GrokToolOutputHook;
 }
 
 /**
@@ -153,15 +155,41 @@ export const makeGrokAcpRuntime = Effect.fn("GrokAcpSupport.makeGrokAcpRuntime")
   ChildProcessSpawner.ChildProcessSpawner | Crypto.Crypto | Scope.Scope
 > {
   const processGroupPlatform = yield* HostProcess.Platform.pipe(Effect.provide(NodeServices.layer));
+  const hook =
+    input.toolOutputHook === undefined
+      ? undefined
+      : yield* input.toolOutputHook().pipe(
+          Effect.mapError(
+            (cause) =>
+              new EffectAcpErrors.AcpSpawnError({
+                command: input.grokSettings?.binaryPath || "grok",
+                cause,
+              }),
+          ),
+        );
+  const spawn = buildGrokAcpSpawnInput(
+    input.grokSettings,
+    input.cwd,
+    input.environment,
+    input.runtimeMode,
+  );
   const acpContext = yield* Layer.build(
     AcpSessionRuntime.layer({
       ...input,
-      spawn: buildGrokAcpSpawnInput(
-        input.grokSettings,
-        input.cwd,
-        input.environment,
-        input.runtimeMode,
-      ),
+      spawn:
+        hook === undefined
+          ? spawn
+          : {
+              ...spawn,
+              args: [
+                ...spawn.args.slice(0, -1),
+                "--no-leader",
+                "--plugin-dir",
+                hook.pluginDirectory,
+                "stdio",
+              ],
+              env: { ...spawn.env, [GROK_TOOL_OUTPUT_HOOK_URL_ENV]: hook.url },
+            },
       authMethodId: resolveGrokAuthMethodId(input.environment),
       cancelMeta: { ...input.cancelMeta, ...GROK_ACP_CANCEL_META },
       initializeMeta: GROK_ACP_INITIALIZE_META,

@@ -1,4 +1,10 @@
 import {
+  ThreadSecretListResult,
+  ThreadSecretSetInput,
+  ThreadSecretRemoveInput,
+  ThreadSecretError,
+} from "./threadSecret.ts";
+import {
   OrchestrationV2SearchThreadError,
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -518,6 +524,9 @@ export const WS_METHODS = {
   scheduledTasksRunNow: "scheduledTasks.runNow",
   scheduledTasksRotateWebhookToken: "scheduledTasks.rotateWebhookToken",
   secretsAnswerRequest: "secrets.answerRequest",
+  secretsList: "secrets.list",
+  secretsSet: "secrets.set",
+  secretsRemove: "secrets.remove",
   scheduledTasksListWebhookDeliveries: "scheduledTasks.listWebhookDeliveries",
   scheduledTasksGetWebhookDelivery: "scheduledTasks.getWebhookDelivery",
 
@@ -1830,6 +1839,19 @@ const WsScheduledTasksRotateWebhookTokenRpc = Rpc.make(
   },
 );
 
+const WsSecretsListRpc = Rpc.make(WS_METHODS.secretsList, {
+  success: ThreadSecretListResult,
+  error: EnvironmentAuthorizationError,
+});
+const WsSecretsSetRpc = Rpc.make(WS_METHODS.secretsSet, {
+  payload: ThreadSecretSetInput,
+  error: Schema.Union([ThreadSecretError, EnvironmentAuthorizationError]),
+});
+const WsSecretsRemoveRpc = Rpc.make(WS_METHODS.secretsRemove, {
+  payload: ThreadSecretRemoveInput,
+  error: Schema.Union([ThreadSecretError, EnvironmentAuthorizationError]),
+});
+
 const WsSecretsAnswerRequestRpc = Rpc.make(WS_METHODS.secretsAnswerRequest, {
   payload: SecretRequestAnswerInput,
   error: Schema.Union([SecretRequestError, EnvironmentAuthorizationError]),
@@ -1938,6 +1960,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsScheduledTasksDeleteRpc,
   WsScheduledTasksRunNowRpc,
   WsScheduledTasksRotateWebhookTokenRpc,
+  WsSecretsListRpc,
+  WsSecretsSetRpc,
+  WsSecretsRemoveRpc,
   WsSecretsAnswerRequestRpc,
   WsScheduledTasksListWebhookDeliveriesRpc,
   WsScheduledTasksGetWebhookDeliveryRpc,

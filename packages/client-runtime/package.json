@@ -7,6 +7,10 @@
       "types": "./src/workspaceBasenameLookup.ts",
       "default": "./src/workspaceBasenameLookup.ts"
     },
+    "./thread-secrets": {
+      "types": "./src/threadSecrets.ts",
+      "default": "./src/threadSecrets.ts"
+    },
     "./composerThreadItems": {
       "types": "./src/composerThreadItems.ts",
       "default": "./src/composerThreadItems.ts"

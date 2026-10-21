@@ -1,6 +1,7 @@
+import { useAtomValue } from "@effect/atom-react";
 import {
   SECRET_REQUEST_DEFAULT_PLACEHOLDER,
-  SECRET_REQUEST_PRIVACY_NOTE,
+  SECRET_REQUEST_LEGACY_PRIVACY_NOTE,
   secretRequestAnswerInput,
   secretRequestDisplay,
   secretRequestFailureMessage,
@@ -14,6 +15,7 @@ import type { EnvironmentId, OrchestrationV2ProjectedTurnItem } from "@t3tools/c
 import { CheckIcon, LockIcon, MinusIcon, ShieldCheckIcon } from "lucide-react";
 import { useId, useRef, useState, type FormEvent } from "react";
 
+import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
@@ -40,7 +42,9 @@ export function SecretRequestCard(props: {
         icon={<Icon className="size-3.5 text-icon-muted" aria-hidden />}
         label={
           <>
-            {item.label} · {display.label}
+            {item.label}
+            {item.name ? <code className="font-mono"> · ${item.name}</code> : null} ·{" "}
+            {display.label}
           </>
         }
       />
@@ -63,6 +67,15 @@ function PendingSecretRequestForm(props: {
     reportFailure: false,
     reportDefect: false,
   });
+  const canAnswer = useAtomValue(
+    serverEnvironment.answerSecretRequest.permissionAtom(props.environmentId),
+  );
+  const summaries = useEnvironmentQuery(serverEnvironment.secretsAtom(props.environmentId));
+  const replacesValue =
+    item.name !== undefined &&
+    summaries.data?.secrets.some(
+      (secret) => secret.threadId === item.threadId && secret.name === item.name,
+    );
   const [secret, setSecret] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -73,7 +86,7 @@ function PendingSecretRequestForm(props: {
     reply: { readonly type: "save"; readonly secret: string } | { readonly type: "decline" },
   ) => {
     const input = secretRequestAnswerInput(item, reply);
-    if (input === null || inFlight.current) return;
+    if (input === null || inFlight.current || !canAnswer) return;
     inFlight.current = true;
     setSubmitting(true);
     setError(null);
@@ -110,7 +123,11 @@ function PendingSecretRequestForm(props: {
       <div className="flex min-w-0 flex-col gap-1">
         <label htmlFor={inputId} className="text-sm font-medium text-foreground">
           {item.label}
+          {item.name ? <code className="ml-2 font-mono">${item.name}</code> : null}
         </label>
+        {replacesValue ? (
+          <p className="text-xs text-muted-foreground">Replaces the saved value</p>
+        ) : null}
         {item.reason.trim() ? <p className="text-sm text-muted-foreground">{item.reason}</p> : null}
       </div>
       <div className="flex min-w-0 items-center gap-2">
@@ -120,7 +137,7 @@ function PendingSecretRequestForm(props: {
             // Masked text rather than a password field: browsers offer to
             // save any submitted password, and this is not a login.
             type="text"
-            className="[-webkit-text-security:disc]"
+            mask
             autoComplete="off"
             autoCorrect="off"
             autoCapitalize="off"
@@ -131,13 +148,13 @@ function PendingSecretRequestForm(props: {
             data-bwignore
             placeholder={item.placeholder ?? SECRET_REQUEST_DEFAULT_PLACEHOLDER}
             value={secret}
-            disabled={submitting}
+            disabled={submitting || !canAnswer}
             aria-invalid={error !== null || undefined}
             aria-describedby={error !== null ? `${privacyId} ${errorId}` : privacyId}
             onChange={(event) => setSecret(event.currentTarget.value)}
           />
         </div>
-        <Button type="submit" disabled={submitting || secret.trim().length === 0}>
+        <Button type="submit" disabled={submitting || !canAnswer || secret.trim().length === 0}>
           Save securely
         </Button>
       </div>
@@ -152,13 +169,15 @@ function PendingSecretRequestForm(props: {
           className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground"
         >
           <ShieldCheckIcon className="size-3.5 shrink-0" aria-hidden />
-          {SECRET_REQUEST_PRIVACY_NOTE}
+          {item.name === undefined
+            ? SECRET_REQUEST_LEGACY_PRIVACY_NOTE
+            : `Available to this thread as $${item.name}`}
         </p>
         <Button
           type="button"
           size="xs"
           variant="ghost-muted"
-          disabled={submitting}
+          disabled={submitting || !canAnswer}
           onClick={() => void send({ type: "decline" })}
         >
           Decline

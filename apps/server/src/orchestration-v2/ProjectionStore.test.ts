@@ -1,3 +1,4 @@
+import { ThreadSecretName } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import {
   EnvironmentId,
@@ -233,12 +234,26 @@ it.effect.each([
         occurredAt: at,
         payload,
       });
+    const secretId = TurnItemId.make("item:thread-wait:pending-secret");
+    yield* updateItem({
+      ...itemBase,
+      id: secretId,
+      runId: initial.runs[0]!.id,
+      type: "secret_request",
+      name: ThreadSecretName.make("GITHUB_TOKEN"),
+      label: "GitHub",
+      reason: "For GitHub access",
+      status: "waiting",
+      secretStatus: "pending",
+    });
     const assertBlocked = Effect.fnUntraced(function* (expected: boolean) {
       const listed = (yield* store.getShellSnapshot()).threads.find((row) => row.id === threadId);
       for (const shell of [yield* store.getThreadShell(threadId), listed]) {
         assert.equal(shell?.activeRunId, run.id);
         assert.equal(shell?.status, "running");
         assert.equal(shell?.blockedOnThreadWait ?? false, expected);
+        assert.equal(shell?.pendingRuntimeRequest?.id, RuntimeRequestId.make(secretId));
+        assert.isTrue(shell?.pendingRuntimeRequest?.blocking);
       }
     });
     const wait = {
@@ -332,6 +347,12 @@ it.effect.each([
       type: "compaction" as const,
       driver,
     };
+    yield* updateItem({
+      ...compaction,
+      id: TurnItemId.make("item:thread-wait:stale-compaction"),
+      runId: initial.runs[0]!.id,
+    });
+    yield* assertBlocked(true);
     yield* updateItem(compaction);
     yield* assertBlocked(false);
     yield* updateItem({ ...compaction, status: "completed", completedAt: at });
@@ -3812,7 +3833,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
     }),
   );
 
-  it.effect("selects the latest waiting secret only from active runs", () =>
+  it.effect("selects the latest waiting secret even after its run completes", () =>
     Effect.gen(function* () {
       const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
       const sql = yield* SqlClient.SqlClient;
@@ -3912,14 +3933,13 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         assert.isDefined(thread);
         const projection = yield* projectionStore.getThreadProjection(threadId);
         const memoryShell = ProjectionStore.threadShellFromProjection(projection);
-        const terminal = status === "completed" || status === "rolled_back";
         assert.deepEqual(
           [thread?.pendingRuntimeRequest?.id, memoryShell.pendingRuntimeRequest?.id],
-          terminal ? [requestId, requestId] : ["secret:b", "secret:b"],
+          ["secret:b", "secret:b"],
         );
         assert.deepEqual(
           [thread?.pendingRuntimeRequest?.blocking, memoryShell.pendingRuntimeRequest?.blocking],
-          terminal ? [false, false] : [true, true],
+          [true, true],
         );
       }
     }),

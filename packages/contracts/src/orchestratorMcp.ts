@@ -1,3 +1,4 @@
+import { ThreadSecretName } from "./threadSecret.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
@@ -13,7 +14,6 @@ import {
   RunId,
   RuntimeRequestId,
   ScheduledTaskId,
-  SecretRef,
   ThreadId,
   TrimmedNonEmptyString,
   TurnItemId,
@@ -618,6 +618,7 @@ export type OrchestratorMcpUpdateScheduledTaskInput =
   typeof OrchestratorMcpUpdateScheduledTaskInput.Type;
 
 export const OrchestratorMcpRequestSecretInput = Schema.Struct({
+  name: ThreadSecretName,
   label: TrimmedNonEmptyString.annotate({
     description: "What you need, shown as the card's title, e.g. 'GitHub webhook secret'.",
   }),
@@ -628,31 +629,18 @@ export const OrchestratorMcpRequestSecretInput = Schema.Struct({
   placeholder: Schema.optional(TrimmedNonEmptyString).annotate({
     description: "Hint inside the input, e.g. 'Paste your GitHub token'.",
   }),
-  timeoutMs: Schema.optional(
-    Schema.Int.check(Schema.isBetween({ minimum: 1_000, maximum: 60 * 60 * 1_000 })),
-  ).annotate({ description: "How long to wait for the user. Default 10 minutes." }),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId).annotate({
     description:
-      "Reuse when retrying a call that lost its result, so the user sees one card and its answer is returned again. Use a new id to ask again after timed_out or cancelled.",
+      "Reuse when retrying a call that lost its result, so the user sees one card. Use a new id to request rotation.",
   }),
 });
 export type OrchestratorMcpRequestSecretInput = typeof OrchestratorMcpRequestSecretInput.Type;
 
-export const OrchestratorMcpRequestSecretResult = Schema.Union([
-  Schema.Struct({
-    status: Schema.Literal("saved").annotate({ description: "secretRef holds the value." }),
-    secretRef: SecretRef.annotate({
-      description:
-        "Pass it to a tool that accepts a secretRef; it works once, and you never see the value.",
-    }),
-  }),
-  Schema.Struct({
-    status: Schema.Literals(["declined", "cancelled", "timed_out"]).annotate({
-      description:
-        "declined: the user chose not to. cancelled: the request ended with the run. timed_out: the user did not answer in time; the card is closed, so ask again with a new clientRequestId if still needed.",
-    }),
-  }),
-]);
+export const OrchestratorMcpRequestSecretResult = Schema.Struct({
+  status: Schema.Literal("requested"),
+  name: ThreadSecretName,
+  replacesExisting: Schema.Boolean,
+});
 export type OrchestratorMcpRequestSecretResult = typeof OrchestratorMcpRequestSecretResult.Type;
 
 export const OrchestratorMcpDeleteScheduledTaskInput = Schema.Struct({

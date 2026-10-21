@@ -1,3 +1,4 @@
+import * as ThreadSecrets from "../secrets/ThreadSecrets.ts";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as Layer from "effect/Layer";
@@ -281,6 +282,8 @@ const layerThreadLifecycleProvided = ThreadLifecycleService.layer.pipe(
 );
 const layerSecretRequestsProvided = SecretRequests.layer.pipe(
   Layer.provide(layerThreadManagementProvided),
+  Layer.provide(ProjectionStore.layer),
+  Layer.provide(ThreadSecrets.layer),
 );
 const layerScheduledTaskProvided = ScheduledTaskService.layer.pipe(
   Layer.provide(
@@ -288,7 +291,7 @@ const layerScheduledTaskProvided = ScheduledTaskService.layer.pipe(
       layerThreadLaunchProvided,
       layerThreadManagementProvided,
       layerManagedProjectFoldersProvided,
-      layerSecretRequestsProvided,
+      ThreadSecrets.layer,
     ),
   ),
 );
@@ -367,6 +370,7 @@ export const layerProduction = Layer.mergeAll(
   layerThreadLifecycleProvided,
   layerScheduledTaskProvided,
   layerSecretRequestsProvided,
+  ThreadSecrets.layer,
   UsageLimitRecoveryWorker.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
@@ -380,7 +384,11 @@ export const layerProduction = Layer.mergeAll(
   layerAgentSessionImporterProvided,
   EffectOutbox.layerPruneWorker.pipe(Layer.provide(EffectOutbox.layer)),
 ).pipe(
-  Layer.provide(ResourceCleanupService.layer.pipe(Layer.provide(layerScheduledTaskProvided))),
+  Layer.provide(
+    ResourceCleanupService.layer.pipe(
+      Layer.provide(Layer.merge(layerScheduledTaskProvided, ThreadSecrets.layer)),
+    ),
+  ),
   Layer.provide(Scheduler.layer),
   Layer.provideMerge(layerEventInfrastructure),
 );

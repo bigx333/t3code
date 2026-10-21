@@ -102,6 +102,8 @@ const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "
 const omitModelConfigOption = process.env.T3_ACP_OMIT_MODEL_CONFIG_OPTION === "1";
 const emitEmptyDefaultAgentOption = process.env.T3_ACP_EMIT_EMPTY_DEFAULT_AGENT_OPTION === "1";
 const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
+const toolOutputEnvironmentName = process.env.T3_ACP_TOOL_OUTPUT_ENV;
+const probeMcpTools = process.env.T3_ACP_PROBE_MCP_TOOLS === "1";
 const initialGrokReasoningEffort =
   process.env.T3_ACP_INITIAL_GROK_REASONING_EFFORT?.trim() || undefined;
 const promptDelayMs = Number(process.env.T3_ACP_PROMPT_DELAY_MS ?? "0");
@@ -639,9 +641,12 @@ const program = Effect.gen(function* () {
     }
   });
 
-  yield* agent.handleCreateSession(() =>
+  yield* agent.handleCreateSession((request) =>
     Effect.gen(function* () {
       yield* requireAuthentication();
+      if (probeMcpTools && !request.mcpServers?.some((server) => server.name === "t3-code")) {
+        return yield* AcpError.AcpRequestError.invalidParams("T3 MCP server was not advertised");
+      }
       if (antigravityProfile) {
         yield* publishAntigravityCommands(sessionId);
       }
@@ -962,6 +967,44 @@ const program = Effect.gen(function* () {
       const requestedSessionId = String(request.sessionId ?? sessionId);
       beginAcpMockPrompt(cancelledSessions, requestedSessionId);
       promptCount += 1;
+      if (probeMcpTools) {
+        const { connectionId } = yield* agent.client.connectMcp({ serverId: "t3-code" });
+        const listed = yield* agent.client.messageMcp({ connectionId, method: "tools/list" });
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: encodeJson(listed) },
+          },
+        });
+        yield* agent.client.disconnectMcp({ connectionId });
+      }
+      if (toolOutputEnvironmentName !== undefined) {
+        const output = process.env[toolOutputEnvironmentName] ?? "unset";
+        for (const kind of ["execute", "read"] as const) {
+          yield* agent.client.sessionUpdate({
+            sessionId: requestedSessionId,
+            update: {
+              sessionUpdate: "tool_call_update",
+              toolCallId: `env-${kind}`,
+              kind,
+              title: kind === "execute" ? "printenv test" : "Read test output",
+              status: "in_progress",
+              rawInput: { command: "printenv test", path: "test.txt" },
+            },
+          });
+          yield* agent.client.sessionUpdate({
+            sessionId: requestedSessionId,
+            update: {
+              sessionUpdate: "tool_call_update",
+              toolCallId: `env-${kind}`,
+              status: "completed",
+              rawOutput: { output },
+              content: [{ type: "content", content: { type: "text", text: output } }],
+            },
+          });
+        }
+      }
       if (
         process.env.T3_ACP_CRASH_PROMPT === "1" &&
         request.prompt.some((part) => part.type === "text" && part.text === "crash now")

@@ -61,6 +61,7 @@ export function idleCompactionWindow(
   if (message === undefined || message.text.trim().toLowerCase() === "/compact") return null;
   if (
     runtimeRequests.some((request) => request.status === "pending") ||
+    turnItems.some((item) => item.type === "secret_request" && item.secretStatus === "pending") ||
     // A pending merge-back belongs to the user's next message.
     contextTransfers.some(
       (transfer) =>

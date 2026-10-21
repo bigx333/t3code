@@ -1,3 +1,4 @@
+import { ThreadSecretName } from "@t3tools/contracts";
 import {
   EnvironmentId,
   NodeId,
@@ -21,7 +22,7 @@ import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as ThreadSecrets from "../secrets/ThreadSecrets.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -160,7 +161,7 @@ it("readThread prefers activity-run status over a newer cancelled queued run", a
           getProviders: Effect.succeed([]),
         } satisfies Partial<ProviderRegistry.ProviderRegistry["Service"]>),
         Layer.mock(ProjectService.ProjectService)({}),
-        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(ThreadSecrets.ThreadSecrets)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({
           list: () => Effect.succeed({ tasks: [] }),
         } satisfies Partial<ScheduledTaskService.ScheduledTaskService["Service"]>),
@@ -275,7 +276,7 @@ it("taskStatus returns task.providerInstanceId rather than the driver kind", asy
           getProviders: Effect.succeed([]),
         } satisfies Partial<ProviderRegistry.ProviderRegistry["Service"]>),
         Layer.mock(ProjectService.ProjectService)({}),
-        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(ThreadSecrets.ThreadSecrets)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({
           list: () => Effect.succeed({ tasks: [] }),
         } satisfies Partial<ScheduledTaskService.ScheduledTaskService["Service"]>),
@@ -402,7 +403,7 @@ it("readThread and sendToThread reach threads in other projects", async () => {
           getProviders: Effect.succeed([]),
         } satisfies Partial<ProviderRegistry.ProviderRegistry["Service"]>),
         Layer.mock(ProjectService.ProjectService)({}),
-        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(ThreadSecrets.ThreadSecrets)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({
           list: () =>
             Effect.succeed({
@@ -494,7 +495,11 @@ it("readThread and sendToThread reach threads in other projects", async () => {
       .pipe(Effect.flip);
     expect(create.code).toBe("parent_not_active");
     const secret = yield* service
-      .requestSecret(makeScope(), { label: "Secret", reason: "requires a run" })
+      .requestSecret(makeScope(), {
+        name: ThreadSecretName.make("TOKEN"),
+        label: "Secret",
+        reason: "requires a run",
+      })
       .pipe(Effect.flip);
     expect(secret.code).toBe("parent_not_active");
 

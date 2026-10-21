@@ -1,3 +1,4 @@
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import { SourceControlProviderKind } from "@t3tools/contracts";
 import { limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -78,6 +79,8 @@ import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
+import { ThreadSecretName } from "@t3tools/contracts";
+import * as ThreadSecrets from "../secrets/ThreadSecrets.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as PreviewManager from "../preview/Manager.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
@@ -308,7 +311,7 @@ const layerScheduledTasksTest = ScheduledTaskService.layer.pipe(
     Layer.mergeAll(
       Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
       Layer.mock(ThreadManagementService.ThreadManagementService)({}),
-      Layer.mock(SecretRequests.SecretRequests)({}),
+      Layer.mock(ThreadSecrets.ThreadSecrets)({}),
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
         namedProjectsRoot: "/projects",
         isScratchProject: () => Effect.succeed(false),
@@ -317,8 +320,11 @@ const layerScheduledTasksTest = ScheduledTaskService.layer.pipe(
     ),
   ),
 );
+const layerThreadSecretsTest = ThreadSecrets.layer.pipe(Layer.provide(ServerSecretStore.layer));
+
 const layerResourceCleanupTest = ResourceCleanupService.layer.pipe(
   Layer.provideMerge(layerScheduledTasksTest),
+  Layer.provideMerge(layerThreadSecretsTest),
   Layer.provide(
     Layer.mergeAll(
       Layer.mock(PreviewManager.PreviewManager)({ close: () => Effect.void }),
@@ -327,8 +333,16 @@ const layerResourceCleanupTest = ResourceCleanupService.layer.pipe(
   ),
 );
 
+const layerProjectDeletionRuntime = RuntimeLayer.layer.pipe(
+  Layer.provide(RuntimeLayer.layerProjectService),
+);
 const layerProjectDeletionTest = Layer.mergeAll(
-  RuntimeLayer.layer.pipe(Layer.provide(RuntimeLayer.layerProjectService)),
+  layerProjectDeletionRuntime,
+  SecretRequests.layer.pipe(
+    Layer.provide(layerProjectDeletionRuntime),
+    Layer.provide(ProjectionStore.layer),
+    Layer.provide(ServerSecretStore.layer),
+  ),
   RuntimeLayer.layerProjectService,
   RuntimeLayer.layerEventSink,
   ThreadCommandExecutor.layer,
@@ -376,6 +390,7 @@ it.layer(layerProjectDeletionTest)("project deletion during thread commands", (i
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
         const tasks = yield* ScheduledTaskService.ScheduledTaskService;
+        const secrets = yield* ThreadSecrets.ThreadSecrets;
         const projectId = ProjectId.make(`automation-delete-project:${deletion}`);
         const threadId = ThreadId.make(`automation-delete-thread:${deletion}`);
         const otherThreadId = ThreadId.make(`automation-surviving-thread:${deletion}`);
@@ -401,6 +416,19 @@ it.layer(layerProjectDeletionTest)("project deletion during thread commands", (i
             worktreePath: null,
           });
         }
+        const secretName = ThreadSecretName.make("LIFECYCLE_TOKEN");
+        yield* secrets.set({
+          threadId,
+          name: secretName,
+          label: "Deleted",
+          value: "deleted-secret",
+        });
+        yield* secrets.set({
+          threadId: otherThreadId,
+          name: secretName,
+          label: "Survivor",
+          value: "surviving-secret",
+        });
         const save = (name: string, target: ThreadId | null, webhook = false) =>
           tasks.upsert({
             id: ScheduledTaskId.make(`automation:${deletion}:${name}`),
@@ -443,6 +471,7 @@ it.layer(layerProjectDeletionTest)("project deletion during thread commands", (i
           threadId,
         });
         yield* worker.drain();
+        assert.isTrue(Option.isSome(yield* secrets.get(threadId, secretName)));
         assert.include(
           (yield* tasks.list()).tasks.map((task) => task.id),
           bound.id,
@@ -462,6 +491,29 @@ it.layer(layerProjectDeletionTest)("project deletion during thread commands", (i
           });
         }
         yield* worker.drain();
+        assert.deepEqual(yield* secrets.list(threadId), []);
+        const secretRequests = yield* SecretRequests.SecretRequests;
+        yield* secretRequests
+          .saveForThread({
+            threadId,
+            name: secretName,
+            label: "Stale Settings replacement",
+            value: "orphan-secret",
+          })
+          .pipe(Effect.flip);
+        assert.deepEqual(yield* secrets.list(threadId), []);
+        assert.deepEqual(yield* secrets.environment(threadId), {});
+        assert.isTrue(Option.isNone(yield* secrets.get(threadId, secretName)));
+        yield* secretRequests.saveForThread({
+          threadId: otherThreadId,
+          name: secretName,
+          label: "Live Settings replacement",
+          value: "surviving-replaced-secret",
+        });
+        assert.equal(
+          Option.getOrThrow(yield* secrets.get(otherThreadId, secretName)),
+          "surviving-replaced-secret",
+        );
         const remainingIds = (yield* tasks.list()).tasks.map((task) => task.id);
         assert.notInclude(remainingIds, bound.id);
         assert.notInclude(remainingIds, webhook.id);

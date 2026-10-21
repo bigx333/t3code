@@ -9,12 +9,13 @@ import { resolveAttachmentPathById } from "../attachmentStore.ts";
 import * as ServerConfig from "../config.ts";
 import * as PreviewManager from "../preview/Manager.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as ThreadSecrets from "../secrets/ThreadSecrets.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 
 export class ResourceCleanupError extends Schema.TaggedError<ResourceCleanupError>()(
   "ResourceCleanupError",
   {
-    operation: Schema.Literals(["terminal", "preview", "attachment", "scheduled-tasks"]),
+    operation: Schema.Literals(["terminal", "preview", "attachment", "scheduled-tasks", "secrets"]),
     threadId: Schema.optional(Schema.String),
     attachmentId: Schema.optional(Schema.String),
     cause: Schema.Defect(),
@@ -22,6 +23,7 @@ export class ResourceCleanupError extends Schema.TaggedError<ResourceCleanupErro
 ) {}
 
 export class ResourceCleanupService extends Context.Reference<{
+  readonly cleanupSecrets: (threadId: ThreadId) => Effect.Effect<void, ResourceCleanupError>;
   readonly cleanupScheduledTasks: (threadId: ThreadId) => Effect.Effect<void, ResourceCleanupError>;
   readonly cleanupTerminals: (threadId: string) => Effect.Effect<void, ResourceCleanupError>;
   readonly cleanupPreviews: (threadId: string) => Effect.Effect<void, ResourceCleanupError>;
@@ -30,6 +32,7 @@ export class ResourceCleanupService extends Context.Reference<{
   ) => Effect.Effect<void, ResourceCleanupError>;
 }>("t3/orchestration-v2/ResourceCleanupService", {
   defaultValue: () => ({
+    cleanupSecrets: () => Effect.void,
     cleanupScheduledTasks: () => Effect.void,
     cleanupTerminals: () => Effect.void,
     cleanupPreviews: () => Effect.void,
@@ -44,8 +47,17 @@ export const layer = Layer.effect(
     const previews = yield* PreviewManager.PreviewManager;
     const fileSystem = yield* FileSystem.FileSystem;
     const config = yield* ServerConfig.ServerConfig;
+    const secrets = yield* ThreadSecrets.ThreadSecrets;
     const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
     return {
+      cleanupSecrets: (threadId: ThreadId) =>
+        secrets
+          .removeThread(threadId)
+          .pipe(
+            Effect.mapError(
+              (cause) => new ResourceCleanupError({ operation: "secrets", threadId, cause }),
+            ),
+          ),
       cleanupScheduledTasks: (threadId: ThreadId) =>
         scheduledTasks
           .deleteForThread(threadId)

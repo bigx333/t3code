@@ -1,3 +1,4 @@
+import { AgentSecrets, withAgentSecrets } from "@t3tools/shared/AgentSecrets";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import { claudeTaskOutputRoot, tailClaudeTaskOutput } from "./ClaudeTaskOutputTail.ts";
 import {
@@ -898,7 +899,11 @@ export const layerQueryRunner: Layer.Layer<
         // which every local user can read. They go over the CLI's stdin control
         // channel instead, so header credentials stay out of its argv and out
         // of the environment every command the agent runs inherits.
-        const { mcpServers, ...queryOptions } = input.options;
+        const { mcpServers, ...baseQueryOptions } = input.options;
+        const queryOptions = {
+          ...baseQueryOptions,
+          env: yield* withAgentSecrets(baseQueryOptions.env, input.threadId),
+        };
         // The SDK spawns a native binary as `path ...executableArgs ...sdkArgs`,
         // which lets the agent scope wrapper go in front of the CLI. The SDK
         // runs a script entry through node instead, so those launch unwrapped.
@@ -1278,6 +1283,7 @@ export function makeClaudeQueryOptions(input: {
   readonly disallowedTools?: ReadonlyArray<string>;
   readonly permissionMode?: PermissionMode;
   readonly canUseTool?: CanUseTool;
+  readonly redactToolOutput?: (value: unknown) => Promise<unknown>;
   readonly onUserDialog?: ClaudeQueryOptions["onUserDialog"];
   readonly supportedDialogKinds?: ClaudeQueryOptions["supportedDialogKinds"];
   readonly allowDangerouslySkipPermissions?: boolean;
@@ -1325,6 +1331,7 @@ export function makeClaudeQueryOptions(input: {
           ...(typeof querySettings === "object" && querySettings !== null ? querySettings : {}),
           autoCompactWindow: Number(input.settings.autoCompactWindow),
         } as ClaudeSdkSettings);
+  const redactToolOutput = input.redactToolOutput;
   const options: ClaudeAgentSdkQueryOptions = {
     model: compiledSelection.apiModelId,
     tools: claudeAgentSdkQueryToolsForSdk(selectedTools),
@@ -1334,6 +1341,30 @@ export function makeClaudeQueryOptions(input: {
         ? "bypassPermissions"
         : (input.permissionMode ?? "default")),
     includePartialMessages: true,
+    ...(redactToolOutput === undefined
+      ? {}
+      : {
+          hooks: {
+            PostToolUse: [
+              {
+                hooks: [
+                  async (hookInput) => {
+                    if (hookInput.hook_event_name !== "PostToolUse") return {};
+                    const updated = await redactToolOutput(hookInput.tool_response);
+                    return updated === hookInput.tool_response
+                      ? {}
+                      : {
+                          hookSpecificOutput: {
+                            hookEventName: "PostToolUse",
+                            updatedToolOutput: updated,
+                          },
+                        };
+                  },
+                ],
+              },
+            ],
+          },
+        }),
     ...(compiledSelection.effort === undefined
       ? {}
       : {
@@ -1434,6 +1465,7 @@ export const CLAUDE_T3_MCP_TOOL_WILDCARD = "mcp__t3-code__*";
 export const CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS: ReadonlyArray<string> = [
   "mcp__t3-code__orchestrator_capabilities",
   "mcp__t3-code__list_scheduled_tasks",
+  "mcp__t3-code__list_secrets",
   "mcp__t3-code__t3_thread_list",
   "mcp__t3-code__t3_thread_wait",
   "mcp__t3-code__t3_pending_request_list",
@@ -4251,6 +4283,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const heldProposedPlansByToolUseId = new Map<string, string>();
         const runtimeContext = yield* Effect.context<never>();
         const runPromise = Effect.runPromiseWith(runtimeContext);
+        const agentSecrets = yield* AgentSecrets;
 
         const emitProviderEvent = (event: ProviderAdapter.ProviderAdapterV2Event) =>
           Queue.offer(events, event).pipe(Effect.asVoid);
@@ -9200,6 +9233,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const shouldResume =
             resumeSessionAt !== undefined || openedWithResume || hasPersistedProviderTurn;
           const queryOptions = makeClaudeQueryOptions({
+            redactToolOutput: (value) =>
+              runPromise(agentSecrets.snapshot(turnInput.threadId)).then(({ redactor }) =>
+                redactor.redactValue(value),
+              ),
             modelSelection: turnInput.modelSelection,
             nativeThreadId,
             resume: shouldResume,

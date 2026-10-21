@@ -1,4 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
+import { AgentSecrets } from "@t3tools/shared/AgentSecrets";
+import { emptySecretRedactor } from "@t3tools/shared/secretRedaction";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { MspError } from "@muse-code/sdk";
 import {
@@ -370,6 +372,33 @@ const approval = (turnId: string) => ({
 });
 
 describe("MuseAdapterV2", () => {
+  it.effect("launches Muse with the query thread's secrets", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeMuse();
+      let launchedEnvironment: NodeJS.ProcessEnv | undefined;
+      yield* makeHarness(fake, INSTANCE_ID, undefined, undefined, undefined, runtimePolicy, {
+        createHost: async (options) => {
+          launchedEnvironment = options.environment;
+          return fake.host;
+        },
+      });
+      assert.deepEqual(launchedEnvironment, { PATH: "/fake/bin", THREAD_SECRET: "muse-secret" });
+    }).pipe(
+      Effect.provideService(AgentSecrets, {
+        snapshot: (threadId) =>
+          Effect.succeed({
+            revision: 1,
+            environment:
+              threadId === THREAD_ID ? { THREAD_SECRET: "muse-secret" } : { OTHER: "other-secret" },
+            redactor: emptySecretRedactor,
+          }),
+        redactor: Effect.succeed(emptySecretRedactor),
+      }),
+      Effect.scoped,
+      Effect.provide(testLayer),
+    ),
+  );
+
   it.effect("connects the thread's MCP credential on native start and resume", () =>
     Effect.gen(function* () {
       yield* (yield* McpProviderSessions.McpProviderSessions).set({

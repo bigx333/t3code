@@ -183,6 +183,12 @@ function SettingsIndexSections() {
 
       <SettingsSection title="Server settings">
         <SettingsRow
+          icon={{ ios: "lock", android: "lock" }}
+          label="Secrets"
+          target="SettingsSecrets"
+          disabled={noServerTargets}
+        />
+        <SettingsRow
           icon="person.crop.circle"
           label="Provider accounts"
           target="SettingsProviderAccounts"

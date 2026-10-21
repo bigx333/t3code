@@ -1,3 +1,5 @@
+import { withAgentSecrets } from "@t3tools/shared/AgentSecrets";
+import { ThreadId } from "@t3tools/contracts";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
@@ -1455,11 +1457,16 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
           ...wrapCommandForLinuxCgroup(linuxCgroupLease, containedTargetCommand, spawnCommand.args),
           shell: false,
         };
+  const scopeThreadId = yield* AgentScopeThreadId;
+  const secretEnvironment = yield* withAgentSecrets(
+    options.spawn.env,
+    scopeThreadId === undefined ? undefined : ThreadId.make(scopeThreadId),
+  );
   const spawnEnvironment =
     linuxCgroupLease === undefined
-      ? options.spawn.env
+      ? secretEnvironment
       : {
-          ...options.spawn.env,
+          ...secretEnvironment,
           ELECTRON_RUN_AS_NODE: "1",
           T3_ACP_CGROUP_WRAPPER: "1",
         };

@@ -545,6 +545,7 @@ export const layer: Layer.Layer<
         providerSessions.open({
           threadId: projection.thread.id,
           providerSessionId,
+          turnStartScope: yield* Effect.scope,
           modelSelection: run.modelSelection,
           runtimePolicy: resolvedRuntimePolicy,
           ...(existingSessionProjection === undefined
@@ -1285,6 +1286,7 @@ export const layer: Layer.Layer<
         },
         (effect, input) =>
           effect.pipe(
+            Effect.scoped,
             Effect.mapError((cause) =>
               isProviderTurnStartError(cause)
                 ? cause

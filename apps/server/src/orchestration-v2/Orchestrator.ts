@@ -7552,6 +7552,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     function* (
       command: Extract<OrchestrationV2InternalCommand, { readonly type: "secret_request.record" }>,
       events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+      effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
     ) {
       const projection = yield* projectionStore
         .getThreadRecords(
@@ -7614,6 +7615,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             completedAt: pending ? null : now,
             updatedAt: now,
             type: "secret_request",
+            ...(command.name === undefined ? {} : { name: command.name }),
             label: command.label,
             reason: command.reason,
             ...(command.placeholder === undefined ? {} : { placeholder: command.placeholder }),
@@ -7631,6 +7633,38 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         occurredAt: now,
         payload: turnItem,
       });
+      if (
+        !unchanged &&
+        existing?.secretStatus === "pending" &&
+        existing.name !== undefined &&
+        (command.secretStatus === "saved" || command.secretStatus === "declined")
+      ) {
+        const name = existing.name;
+        const saved = command.secretStatus === "saved";
+        const text = saved
+          ? `The user saved the secret ${name}. New processes you start should have it as $${name}; check with \`test -n "$${name}"\` before relying on it, and never print its value.`
+          : `The user declined to provide the secret ${name}.`;
+        yield* dispatchMessage(
+          {
+            type: "message.dispatch",
+            commandId: CommandId.make(`secret-request:${existing.id}:continuation`),
+            threadId: command.threadId,
+            messageId: MessageId.make(`secret-request:${existing.id}:continuation`),
+            text,
+            notification: {
+              source: { kind: "system" },
+              outcome: "completed",
+              summary: saved ? `Secret ${name} saved` : `Secret ${name} declined`,
+            },
+            attachments: [],
+            dispatchMode: { type: "queue_after_active" },
+            createdBy: "agent",
+            creationSource: "server",
+          },
+          events,
+          effects,
+        );
+      }
     },
   );
 
@@ -11557,7 +11591,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         yield* dispatchCreatedThreadRecord(command, events);
         break;
       case "secret_request.record":
-        yield* dispatchSecretRequestRecord(command, events);
+        yield* dispatchSecretRequestRecord(command, events, effects);
         break;
       default:
         return yield* dispatchUnsupported(command);

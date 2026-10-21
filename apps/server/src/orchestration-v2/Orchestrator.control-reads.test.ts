@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
+  ThreadSecretName,
   MessageId,
   EventId,
   NodeId,
@@ -1230,4 +1231,100 @@ it.effect("explicit settle clears snooze atomically and stays idempotent after r
     assert.deepInclude(yield* projections.getThreadShell(threadId), active);
     assert.deepInclude((yield* projections.getThreadProjection(threadId)).thread, active);
   }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect.each(["saved", "declined"] as const)(
+  "a secret %s answer queues one server continuation without steering",
+  (secretStatus) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = ThreadId.make(`thread:secret:${secretStatus}`);
+      const name = ThreadSecretName.make("GITHUB_TOKEN");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("create-secret"),
+        threadId,
+        projectId: ProjectId.make("project:secret"),
+        title: "Secret",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("start-secret"),
+        threadId,
+        messageId: MessageId.make("start-secret"),
+        text: "Use GitHub",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const before = yield* projections.getThreadProjection(threadId);
+      const run = before.runs[0]!;
+      assert.isNotNull(run.rootNodeId);
+      const record = {
+        type: "secret_request.record",
+        threadId,
+        runId: run.id,
+        nodeId: run.rootNodeId!,
+        turnItemId: TurnItemId.make(`secret:${secretStatus}`),
+        name,
+        label: "GitHub",
+        reason: "For GitHub access",
+      } as const;
+      yield* orchestrator.dispatch({
+        ...record,
+        commandId: CommandId.make("request-secret"),
+        secretStatus: "pending",
+      });
+      assert.lengthOf(
+        (yield* projections.getThreadProjection(threadId)).messages,
+        before.messages.length,
+      );
+      yield* orchestrator.dispatch({
+        ...record,
+        commandId: CommandId.make("answer-secret"),
+        secretStatus,
+      });
+      yield* orchestrator.dispatch({
+        ...record,
+        commandId: CommandId.make("answer-secret"),
+        secretStatus,
+      });
+      yield* orchestrator.dispatch({
+        ...record,
+        commandId: CommandId.make("repeat-answer-secret"),
+        secretStatus: secretStatus === "saved" ? "declined" : "saved",
+      });
+      const after = yield* projections.getThreadProjection(threadId);
+      const messages = after.messages.filter(
+        (message) => message.id === `secret-request:${record.turnItemId}:continuation`,
+      );
+      assert.lengthOf(messages, 1);
+      const message = messages[0]!;
+      assert.equal(message.createdBy, "agent");
+      assert.equal(message.creationSource, "server");
+      assert.equal(
+        message.text,
+        secretStatus === "saved"
+          ? 'The user saved the secret GITHUB_TOKEN. New processes you start should have it as $GITHUB_TOKEN; check with `test -n "$GITHUB_TOKEN"` before relying on it, and never print its value.'
+          : "The user declined to provide the secret GITHUB_TOKEN.",
+      );
+      assert.equal(after.runs.find((candidate) => candidate.id === run.id)?.status, run.status);
+      assert.lengthOf(
+        after.runs.filter((candidate) => candidate.status === "queued"),
+        1,
+      );
+      assert.equal(
+        after.turnItems.find((item) => item.id === record.turnItemId)?.type,
+        "secret_request",
+      );
+    }).pipe(Effect.provide(layerTest)),
 );
