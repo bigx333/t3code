@@ -922,3 +922,57 @@ describe("synchronized mobile model visibility", () => {
     });
   });
 });
+
+describe("mobile unavailable provider model options", () => {
+  it.each([
+    ["signed out", { auth: { status: "unauthenticated" as const } }],
+    ["not checked yet", { installed: false }],
+  ])("keeps an enabled %s provider listed with unavailable models", (_state, probe) => {
+    const config = {
+      providers: [
+        {
+          instanceId: "claudeAgent",
+          driver: "claudeAgent",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" as const },
+          ...probe,
+          models: [
+            { slug: "claude-opus", name: "Claude Opus", isCustom: false, capabilities: null },
+          ],
+        },
+      ],
+    } as unknown as ServerConfig;
+
+    const options = buildModelOptions(config, null, undefined, null);
+
+    expect(options).toMatchObject([
+      { providerKey: "claudeAgent", providerLabel: "Claude", isUnavailable: true },
+    ]);
+    expect(
+      resolveNewTaskModelSelection({
+        draftSelection: null,
+        projectDefaultSelection: null,
+        stickySelection: null,
+        modelOptions: options,
+      }),
+    ).toBeNull();
+  });
+
+  it("drops an Antigravity instance until it is set up", () => {
+    const config = {
+      providers: [
+        {
+          instanceId: "antigravity",
+          driver: "antigravity",
+          enabled: true,
+          installed: false,
+          auth: { status: "unknown" as const },
+          models: [{ slug: "gemini", name: "Gemini", isCustom: false, capabilities: null }],
+        },
+      ],
+    } as unknown as ServerConfig;
+
+    expect(buildModelOptions(config, null, undefined, null)).toEqual([]);
+  });
+});

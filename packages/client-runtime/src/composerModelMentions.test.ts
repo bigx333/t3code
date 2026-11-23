@@ -64,6 +64,14 @@ describe("rankComposerModelMentions", () => {
   );
 });
 
+describe("formatComposerModelMention", () => {
+  it("names the provider instance and the model", () => {
+    expect(formatComposerModelMention("opencode", "anthropic/opus")).toBe(
+      "model:opencode/anthropic/opus",
+    );
+  });
+});
+
 describe("collectComposerModelMentions", () => {
   it("reads back what formatComposerModelMention writes, inside prose", () => {
     const text = `use ${formatComposerModelMention("opencode", "anthropic/opus")}, then model:codex/gpt-5.4.`;

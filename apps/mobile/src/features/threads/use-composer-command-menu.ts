@@ -195,7 +195,8 @@ export function buildComposerModelItems(
       .filter(
         (provider) =>
           provider.installed &&
-          provider.status === "ready" &&
+          // The server still delegates through a provider whose health check only warns.
+          (provider.status === "ready" || provider.status === "warning") &&
           provider.auth.status !== "unauthenticated" &&
           provider.availability !== "unavailable",
       )
@@ -212,6 +213,7 @@ export function buildComposerModelItems(
     query,
     (option) => ({
       name: option.label,
+      ...(option.shortName ? { shortName: option.shortName } : {}),
       ...(option.subtitle ? { subProvider: option.subtitle } : {}),
       driverKind: option.providerDriver,
       providerDisplayName: option.providerLabel,

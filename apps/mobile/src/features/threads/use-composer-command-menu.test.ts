@@ -173,4 +173,46 @@ describe("mobile model mentions", () => {
   ] as const)("does not suggest a preserved selection whose provider is %s", (_, providers) => {
     expect(buildComposerModelItems([option("traex:gpt-6.1")], "gpt", providers)).toEqual([]);
   });
+
+  it("matches a model by its short name", () => {
+    const opus = option("claude:claude-opus", {
+      label: "Claude flagship",
+      shortName: "Opus",
+      providerDriver: "claudeAgent",
+      providerLabel: "Claude",
+    });
+    expect(buildComposerModelItems([opus], "opus", [provider("claude")])).toEqual([
+      expect.objectContaining({ option: opus }),
+    ]);
+  });
+
+  it("suggests models from a provider whose health check only warns", () => {
+    const opus = option("claude:claude-opus", {
+      label: "Claude Opus",
+      providerDriver: "claudeAgent",
+      providerLabel: "Claude",
+    });
+    expect(
+      buildComposerModelItems([opus], "opus", [
+        provider("claude", { status: "warning", auth: { status: "unknown" } }),
+      ]),
+    ).toEqual([expect.objectContaining({ option: opus })]);
+  });
+
+  it("replaces a model mention with prompt text and places the cursor after it", () => {
+    const modelOption = option("codex:gpt-5.4");
+    expect(
+      resolveComposerCommandSelection({
+        draftMessage: "@gpt",
+        trigger: { rangeStart: 0, rangeEnd: 4 },
+        item: {
+          id: `model:${modelOption.key}`,
+          type: "model",
+          option: modelOption,
+          label: modelOption.label,
+          description: modelOption.providerLabel,
+        },
+      }),
+    ).toEqual({ text: "model:codex/gpt-5.4 ", cursor: 20 });
+  });
 });

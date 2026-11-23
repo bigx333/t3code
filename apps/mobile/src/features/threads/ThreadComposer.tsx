@@ -417,7 +417,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
   const mentionableEnvironments = useMentionableEnvironments();
   // Mentions name any model for the agent, so they aren't limited to models this thread can switch to.
   const mentionModelOptions = buildModelOptions(
-    props.serverConfig,
+    serverConfigForCwd(props.serverConfig, props.projectCwd),
     currentModelSelection,
     undefined,
     props.selectedThread.projectId,

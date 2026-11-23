@@ -14,7 +14,12 @@ export function matchComposerModelItems(input: {
 }): ComposerModelItem[] {
   const candidates: Array<{ entry: ProviderInstanceEntry; option: ModelEsque }> = [];
   for (const entry of input.instanceEntries) {
-    if (!isProviderInstancePickerReady(entry)) continue;
+    // A mention only names a model for the agent, and the server still delegates through a
+    // provider whose health check only warns, so a warning keeps its models mentionable.
+    const mentionable =
+      isProviderInstancePickerReady(entry) ||
+      (entry.enabled && entry.isAvailable && entry.status === "warning");
+    if (!mentionable) continue;
     for (const option of input.modelOptionsByInstance.get(entry.instanceId) ?? []) {
       // The picker hides legacy models by default; skip them so they don't fill the result cap.
       if (option.isLegacy || option.isUnavailable) continue;
