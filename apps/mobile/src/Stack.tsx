@@ -145,6 +145,7 @@ import { SettingsAboutRouteScreen } from "./features/settings/SettingsAboutRoute
 import { SettingsNotificationsRouteScreen } from "./features/settings/SettingsNotificationsRouteScreen";
 import { SettingsRouteScreen } from "./features/settings/SettingsRouteScreen";
 import { SettingsLabsRouteScreen } from "./features/settings/ThreadSettingsSections";
+import { SkillsLibraryIssuesRouteScreen } from "./features/settings/SkillsLibrarySettings";
 import { SettingsEnvironmentFilterProvider } from "./features/settings/settings-environment-filter";
 import { openSettings, settingsOpenIn } from "./features/settings/settings-navigation";
 import { DEFAULT_SETTINGS_PAGE } from "./features/layout/workspace/workspace-tab-navigation";
@@ -284,6 +285,10 @@ const SETTINGS_SCREENS = {
     screen: SettingsLabsRouteScreen,
     linking: "settings/labs",
     options: settingsPage(),
+  }),
+  SettingsSkillsLibraryIssues: createNativeStackScreen({
+    screen: SkillsLibraryIssuesRouteScreen,
+    options: SEARCH_SHEET_ROUTE,
   }),
   SettingsProviderAccounts: createNativeStackScreen({
     screen: SettingsProviderAccountsRouteScreen,

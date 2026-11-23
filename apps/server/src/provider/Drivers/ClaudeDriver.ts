@@ -420,6 +420,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     return {
       instanceId,
       driverKind: DRIVER_KIND,
+      sharedSkillsDirectory: path.join(configDir, "skills"),
       continuationIdentity: {
         ...fallbackContinuationIdentity,
         continuationKey: continuationGroupKey,

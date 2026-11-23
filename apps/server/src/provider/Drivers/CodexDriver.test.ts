@@ -228,6 +228,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
             ),
           ),
         );
+        expect(instance.sharedSkillsDirectory).toBe(NodePath.join(sharedHome, "skills"));
         const observedAccount = yield* Deferred.make<void>();
         const disconnected = yield* instance.snapshot.streamChanges.pipe(
           Stream.tap((provider) =>
@@ -635,6 +636,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
           environment: [{ name: "CODEX_HOME", value: codexHome, sensitive: false }],
           config: CodexDriver.defaultConfig(),
         });
+        expect(instance.sharedSkillsDirectory).toBe(NodePath.join(codexHome, "skills"));
         expect(instance.continuationIdentity.continuationKey).toBe(`codex:home:${codexHome}`);
       }
     }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn)),

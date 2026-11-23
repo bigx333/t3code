@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./skills-library-issues": {
+      "types": "./src/skillsLibraryIssues.ts",
+      "default": "./src/skillsLibraryIssues.ts"
+    },
     "./pull-request-diff-fold": {
       "types": "./src/pullRequestDiffFold.ts",
       "default": "./src/pullRequestDiffFold.ts"

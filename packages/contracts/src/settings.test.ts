@@ -43,6 +43,15 @@ const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const encodeServerSettingsPatch = Schema.encodeSync(ServerSettingsPatch);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
 
+describe("skills library setting", () => {
+  it("stays off for existing installations and accepts explicit opt-in", () => {
+    expect(decodeServerSettings({}).skillsLibraryEnabled).toBe(false);
+    expect(decodeServerSettingsPatch({ skillsLibraryEnabled: true })).toEqual({
+      skillsLibraryEnabled: true,
+    });
+  });
+});
+
 it("drops theme defaults from a client's settings patch", () => {
   expect(
     decodeClientServerSettingsPatch({

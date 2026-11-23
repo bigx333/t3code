@@ -591,6 +591,17 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("beta fast worktree checkout clone apfs copy-on-write cache macos speed")],
   },
   {
+    id: "skills-library",
+    title: msg("Skills library"),
+    to: "/settings/labs",
+    scope: "environment-defaults",
+    searchTerms: [
+      msg(
+        "beta shared skills folder agents .agents/skills link claude codex antigravity cursor opencode one set accounts",
+      ),
+    ],
+  },
+  {
     id: "voice-transcription-destination",
     title: msg("Transcribe with"),
     to: "/settings/voice",

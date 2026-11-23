@@ -607,6 +607,10 @@
       "types": "./src/cloneUrl.ts",
       "import": "./src/cloneUrl.ts"
     },
+    "./skillFrontmatter": {
+      "types": "./src/skillFrontmatter.ts",
+      "import": "./src/skillFrontmatter.ts"
+    },
     "./speech": {
       "types": "./src/speech.ts",
       "import": "./src/speech.ts"

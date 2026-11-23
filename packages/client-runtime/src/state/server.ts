@@ -2022,6 +2022,15 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:check-otlp-endpoint",
       tag: WS_METHODS.serverCheckOtlpEndpoint,
     }),
+    skillsLibraryStatus: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:skills-library-status",
+      tag: WS_METHODS.serverGetSkillsLibraryStatus,
+    }),
+    refreshSkillsLibrary: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:refresh-skills-library",
+      tag: WS_METHODS.serverRefreshSkillsLibrary,
+      concurrency: { mode: "singleFlight", key: ({ environmentId }) => environmentId },
+    }),
     checkSecretSource: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:check-secret-source",
       tag: WS_METHODS.serverCheckSecretSource,

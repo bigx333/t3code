@@ -27,7 +27,8 @@ import { SettingsSection } from "./components/SettingsSection";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { planAutoSettleSettingsSync, type AutoSettleSettings } from "./autoSettleSettingsSync";
-import { useSettingsEnvironmentFilter } from "./settings-environment-filter";
+import { useSettingsEnvironmentFilter, type SettingsTarget } from "./settings-environment-filter";
+import { SkillsLibrarySettings } from "./SkillsLibrarySettings";
 import {
   managedSettingReason,
   resolveMobileSettingsTargets,
@@ -65,6 +66,7 @@ export function SettingsLabsRouteScreen() {
             "On a Mac, clone new worktrees from a checkout cached in the T3 home folder instead of writing every file. Uses Git’s normal checkout when it can’t. Turning it off deletes the cache.",
           )}
         />
+        <SkillsLibrarySections />
         <AgentFeedbackSection />
       </ScrollView>
     </SettingsScreen>
@@ -346,6 +348,25 @@ function AgentFeedbackSection() {
       </Text>
     </View>
   );
+}
+
+function SkillsLibrarySections() {
+  const gt = useGT();
+  const { environments } = useEnvironments();
+  return environments
+    .filter(
+      (environment): environment is SettingsTarget =>
+        environment.connection.phase === "connected" &&
+        environment.serverConfig?.environment.capabilities.skillsLibrary === true,
+    )
+    .map((environment) => (
+      <SettingsSection
+        key={environment.environmentId}
+        title={gt("Beta: Skills library on {environment}", { environment: environment.label })}
+      >
+        <SkillsLibrarySettings environment={environment} />
+      </SettingsSection>
+    ));
 }
 
 /** One switch per connected machine that offers the beta, since each machine's own setting decides. */

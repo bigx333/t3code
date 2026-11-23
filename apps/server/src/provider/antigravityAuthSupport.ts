@@ -23,6 +23,7 @@ import {
   antigravityUserSkillDirectories,
   resolveAntigravityUserHome,
 } from "./Drivers/AntigravitySkills.ts";
+import { prepareAntigravitySkillSnapshot } from "./antigravitySkillSnapshot.ts";
 
 export const ANTIGRAVITY_AUTH_STDOUT_PREFIX =
   "Open the following link to authenticate the ACP server: ";
@@ -264,7 +265,7 @@ const linkAntigravityUserConfig = Effect.fn("linkAntigravityUserConfig")(functio
   readonly profileDirectory: string;
   readonly userHome: string;
   readonly platform: NodeJS.Platform;
-}): Effect.fn.Return<void, never, FileSystem.FileSystem | Path.Path> {
+}): Effect.fn.Return<void, AcpErrors.AcpTransportError, FileSystem.FileSystem | Path.Path> {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const userGemini = path.join(input.userHome, ".gemini");
@@ -286,47 +287,71 @@ const linkAntigravityUserConfig = Effect.fn("linkAntigravityUserConfig")(functio
             ] as const,
         )),
   ] as const) {
+    const snapshotDirectory = path.join(
+      input.profileDirectory,
+      "t3-skill-snapshots",
+      path.basename(path.dirname(link)),
+    );
     yield* Effect.gen(function* () {
-      // The harness creates these folders itself, and mkdir fails on a dangling link.
-      if (!(yield* fs.exists(target))) {
-        const linked = yield* fs.readLink(link).pipe(
-          Effect.as(true),
-          Effect.orElseSucceed(() => false),
-        );
-        if (linked) yield* fs.remove(link);
-        return;
-      }
-      const existing = yield* fs.readLink(link).pipe(
-        Effect.map((value): string | undefined => path.resolve(path.dirname(link), value)),
-        Effect.catchReason("PlatformError", "NotFound", () => Effect.undefined),
-        // An empty folder is the harness's placeholder from a launch without the link.
-        // rmdir refuses a non-empty folder, so content added meanwhile is never deleted.
-        Effect.catch((error) =>
-          Effect.tryPromise({
-            try: () => NodeFSP.rmdir(link),
-            catch: (cause) => new AntigravitySkillLinkError({ link, cause }),
-          }).pipe(
-            Effect.as(undefined),
-            Effect.mapError(() => error),
-          ),
-        ),
-      );
-      if (existing === target) return;
-      if (existing !== undefined) {
-        yield* fs.remove(link);
-      }
-      yield* fs.makeDirectory(path.dirname(link), { recursive: true });
-      yield* Effect.tryPromise({
-        try: () => NodeFSP.symlink(target, link, type),
+      const existing = yield* Effect.tryPromise({
+        try: () =>
+          NodeFSP.lstat(link).catch((cause: NodeJS.ErrnoException) => {
+            if (cause.code === "ENOENT") return undefined;
+            throw cause;
+          }),
         catch: (cause) => new AntigravitySkillLinkError({ link, cause }),
       });
+      if (!(yield* fs.exists(target))) {
+        if (existing?.isSymbolicLink()) yield* fs.remove(link);
+        if (type !== "file") yield* fs.remove(snapshotDirectory, { recursive: true, force: true });
+        return;
+      }
+      // Preserve private skills; only an empty harness placeholder is replaceable.
+      if (existing !== undefined && !existing.isSymbolicLink()) {
+        if (!existing.isDirectory() || (yield* fs.readDirectory(link)).length > 0) return;
+        yield* Effect.tryPromise({
+          try: () => NodeFSP.rmdir(link),
+          catch: (cause) => new AntigravitySkillLinkError({ link, cause }),
+        });
+      }
+      const readableTarget =
+        type === "file"
+          ? target
+          : yield* prepareAntigravitySkillSnapshot({
+              sourceDirectory: target,
+              snapshotDirectory,
+              libraryDirectory: path.join(input.userHome, ".agents", "skills"),
+              platform: input.platform,
+            });
+      const current = existing?.isSymbolicLink()
+        ? path.resolve(path.dirname(link), yield* fs.readLink(link))
+        : undefined;
+      if (current !== readableTarget) {
+        if (existing?.isSymbolicLink()) yield* fs.remove(link);
+        yield* fs.makeDirectory(path.dirname(link), { recursive: true });
+        yield* Effect.tryPromise({
+          try: () => NodeFSP.symlink(readableTarget, link, type),
+          catch: (cause) => new AntigravitySkillLinkError({ link, cause }),
+        });
+      }
+      if (type !== "file" && readableTarget !== snapshotDirectory)
+        yield* fs.remove(snapshotDirectory, { recursive: true, force: true });
     }).pipe(
-      Effect.catch((error) =>
-        Effect.logWarning("Antigravity user configuration is not linked into the profile.", {
-          link,
-          target,
-          error,
-        }),
+      Effect.catch((cause) =>
+        type === "file"
+          ? Effect.logWarning("Antigravity user configuration is not linked into the profile.", {
+              link,
+              target,
+              error: cause,
+            })
+          : Effect.fail(
+              isAcpTransportError(cause)
+                ? cause
+                : new AcpErrors.AcpTransportError({
+                    detail: "Antigravity could not prepare its user skill directories.",
+                    cause,
+                  }),
+            ),
       ),
     );
   }

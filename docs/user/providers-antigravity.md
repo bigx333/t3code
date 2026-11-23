@@ -107,6 +107,13 @@ on its own; to share a folder like that one, list it in `~/.gemini/config/skills
 (or a project's `.agents/skills.json`), and T3 Code shows the skills it declares,
 honoring `inherits`, `include_only`, and `exclude`.
 
+You can also enable the
+[skills library](./composer.md#one-skills-library-for-every-provider) to share
+`~/.agents/skills`. T3 Code prepares a readable copy for Antigravity when a provider
+session starts. Edit the original shared skill, then start a new session to pick up
+changes. Private skills in an Antigravity account's profile remain separate from the
+shared library.
+
 Antigravity receives images and audio directly, and reads PDFs and text files as
 documents. Other attachments, including videos, are passed as a saved file path for
 the agent to inspect with its tools.

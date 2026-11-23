@@ -13,6 +13,7 @@ import { Switch } from "../ui/switch";
 import { ScopedSwitch } from "./ScopedSwitch";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
 import { useSearchableSetting } from "./settingsSearch";
+import { SkillsLibraryRows } from "./SkillsLibrarySettings";
 import {
   useScopedSettings,
   useScopedSettingsMixed,
@@ -35,6 +36,7 @@ export function LabsSettingsPanel() {
         <PromptSuggestionsRow />
         <SimlockHostsRow />
         <FastWorktreeCheckoutRow />
+        <SkillsLibraryRows />
         <AgentFeedbackRow />
       </SettingsSection>
     </SettingsPageContainer>
