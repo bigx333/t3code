@@ -50,7 +50,7 @@ const runWithPeerLinks = Effect.fn("environment.runWithPeerLinks")(function* <A,
       Effect.fail(new CliError.UserError({ cause: error, userMessage: error.message })),
     ),
     Effect.provide(
-      PeerLinks.layer.pipe(
+      PeerLinks.layerWithSsh.pipe(
         Layer.provide(
           Layer.mergeAll(
             ServerSecretStore.layer,

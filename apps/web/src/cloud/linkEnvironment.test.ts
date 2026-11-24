@@ -110,6 +110,7 @@ function layerRegistry(options?: {
           connect: Effect.void,
           disconnect: Effect.void,
           retryNow: Effect.void,
+          setDiscoveredRoutes: () => Effect.void,
         } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
       });
       const supervisors = new Map([

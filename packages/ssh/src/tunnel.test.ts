@@ -100,6 +100,70 @@ function commandArgs(command: ChildProcess.Command): ReadonlyArray<string> {
 
 const ARCHIVE = { archiveVersion: "1.2.3-preview.20260911.4" } as const;
 
+const runArchiveRunner = Effect.fn("test.runArchiveRunner")(
+  function* (
+    installedVersion: string,
+    installDirectory = ".local/bin",
+    options?: {
+      readonly cliScript?: string;
+      readonly fifo?: boolean;
+    },
+  ) {
+    const fs = yield* FileSystem.FileSystem;
+    const root = yield* fs.makeTempDirectoryScoped();
+    yield* fs.makeDirectory(`${root}/${installDirectory}`, { recursive: true });
+    yield* fs.makeDirectory(`${root}/bin`);
+    if (options?.fifo) {
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const mkfifo = yield* spawner.spawn(
+        ChildProcess.make("mkfifo", ["-m", "700", `${root}/${installDirectory}/t3`]),
+      );
+      yield* mkfifo.exitCode;
+    } else {
+      yield* fs.writeFileString(
+        `${root}/${installDirectory}/t3`,
+        options?.cliScript ??
+          `#!/bin/sh\ncase "$1" in\n--version) echo 't3 v${installedVersion}';;\n__ssh-helper) exit 0;;\n*) printf 'installed:%s\\n' "$*";;\nesac\n`,
+      );
+      yield* fs.chmod(`${root}/${installDirectory}/t3`, 0o700);
+    }
+    yield* fs.writeFileString(
+      `${root}/bin/curl`,
+      '#!/bin/sh\nprintf "%s\\n" "$@" > "$HOME/request"\necho "HTTP 404 $*" >&2\nexit 22\n',
+    );
+    yield* fs.chmod(`${root}/bin/curl`, 0o700);
+    yield* fs.writeFileString(`${root}/runner.sh`, SshTunnel.buildRemoteT3RunnerScript(ARCHIVE));
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const child = yield* spawner.spawn(
+      ChildProcess.make("sh", [`${root}/runner.sh`, "pair", "--json"], {
+        env: { HOME: root, PATH: `${root}/bin:/usr/bin:/bin` },
+        extendEnv: false,
+      }),
+    );
+    const collect = <E>(stream: Stream.Stream<Uint8Array, E>) =>
+      stream.pipe(
+        Stream.decodeText(),
+        Stream.runCollect,
+        Effect.map((chunks) => chunks.join("")),
+      );
+    const [stdout, stderr, exitCode] = yield* Effect.all(
+      [collect(child.stdout), collect(child.stderr), child.exitCode.pipe(Effect.map(Number))],
+      { concurrency: "unbounded" },
+    );
+    return {
+      stdout,
+      stderr,
+      exitCode,
+      request: (yield* fs.exists(`${root}/request`))
+        ? yield* fs.readFileString(`${root}/request`)
+        : "",
+      runtimeExists: yield* fs.exists(`${root}/.t3/runtime/versions/${ARCHIVE.archiveVersion}`),
+    };
+  },
+  Effect.scoped,
+  Effect.provide(NodeServices.layer),
+);
+
 // Emulates `t3 serve`: it takes the home owner lock at startup, then binds
 // once a second server has tried the same home (or after 2s), so a concurrent
 // launch always sees the home still unclaimed. Like the real server, it
@@ -173,6 +237,175 @@ const localRemoteShellLayer = (home: string) =>
   );
 
 describe("ssh tunnel scripts", () => {
+  const serviceManagers = [
+    "launchd",
+    "systemd",
+    "systemd-unavailable",
+    "systemd-unavailable-xdg",
+    "systemd-unavailable-relative-xdg",
+    "systemd-unavailable-login-xdg",
+    "none",
+  ] as const;
+  it.live.each(serviceManagers)(
+    "respects %s service ownership when the server is stopped",
+    (manager) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const root = yield* fs.makeTempDirectoryScoped();
+        const bin = `${root}/.t3/bin`;
+        yield* fs.makeDirectory(bin, { recursive: true });
+        const scripts = {
+          t3: `#!/bin/sh
+case "$1" in
+  --version) echo 't3 v${ARCHIVE.archiveVersion}' ;;
+  __ssh-helper)
+    if [ "$2" = --help ]; then exit 0; fi
+    if [ "$2" = pick-port ]; then touch "$HOME/standalone-attempt"; fi
+    exit 1 ;;
+  *) exit 1 ;;
+esac
+`,
+          uname: `#!/bin/sh\necho '${manager === "launchd" ? "Darwin" : "Linux"}'\n`,
+          systemctl: `#!/bin/sh\nexit ${manager === "systemd" ? 0 : 1}\n`,
+          curl: "#!/bin/sh\nexit 22\n",
+        };
+        for (const [name, script] of Object.entries(scripts)) {
+          yield* fs.writeFileString(`${bin}/${name}`, script);
+          yield* fs.chmod(`${bin}/${name}`, 0o700);
+        }
+        if (manager === "launchd") {
+          const agents = `${root}/Library/LaunchAgents`;
+          yield* fs.makeDirectory(agents, { recursive: true });
+          yield* fs.writeFileString(`${agents}/com.t3tools.t3code.service.plist`, "installed");
+        }
+        const xdgConfigHome =
+          manager === "systemd-unavailable-xdg" || manager === "systemd-unavailable-login-xdg"
+            ? `${root}/custom config`
+            : manager === "systemd-unavailable-relative-xdg"
+              ? "relative-config"
+              : undefined;
+        if (manager.startsWith("systemd-unavailable")) {
+          const units = `${manager === "systemd-unavailable-xdg" ? xdgConfigHome : `${root}/.config`}/systemd/user`;
+          yield* fs.makeDirectory(units, { recursive: true });
+          yield* fs.writeFileString(`${units}/t3code.service`, "installed");
+        }
+        const ssh = ChildProcessSpawner.make((command) => {
+          if (command._tag !== "StandardCommand") return Effect.die("Expected SSH command");
+          return spawner.spawn(
+            ChildProcess.make("sh", ["-s", "--", "test-peer"], {
+              ...command.options,
+              env: {
+                HOME: root,
+                PATH: `${bin}:/usr/bin:/bin`,
+                ...(xdgConfigHome === undefined ? {} : { XDG_CONFIG_HOME: xdgConfigHome }),
+              },
+              extendEnv: false,
+            }),
+          );
+        });
+        const result = yield* SshTunnel.launchOrReuseRemoteServer(
+          { alias: "box", hostname: "box", username: null, port: null },
+          undefined,
+          ARCHIVE,
+        ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, ssh), Effect.result);
+        assert.isTrue(Result.isFailure(result));
+        if (Result.isFailure(result)) {
+          assert.isTrue(isSshCommandError(result.failure));
+          if (isSshCommandError(result.failure)) {
+            assert.include(
+              result.failure.stderr,
+              manager === "none" ? "Failed to find an available port" : "t3 service restart",
+            );
+          }
+        }
+        assert.equal(yield* fs.exists(`${root}/standalone-attempt`), manager === "none");
+        assert.isFalse(yield* fs.exists(`${root}/.t3/ssh-launch/test-peer/pid`));
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
+  );
+
+  it.effect(
+    "binds SSH forwarding explicitly to loopback regardless of the user's GatewayPorts setting",
+    () =>
+      Effect.gen(function* () {
+        let forwarding = "";
+        const spawner = ChildProcessSpawner.make((command) => {
+          const args = commandArgs(command);
+          if (args.includes("-N")) {
+            forwarding = args[args.indexOf("-L") + 1] ?? "";
+            return Effect.succeed(makeRunningProcess(() => {}));
+          }
+          return Effect.succeed(
+            makeSuccessfulProcess('{"remotePort":3773,"serverKind":"external"}\n'),
+          );
+        });
+        const layer = Layer.mergeAll(
+          NodeServices.layer,
+          NodeCrypto.layer,
+          Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Layer.succeed(HttpClient.HttpClient, testHttpClient),
+          Layer.succeed(NetService.NetService, testNetService),
+          SshAuth.SshPasswordPrompt.disabledLayer,
+          SshTunnel.SshEnvironmentManager.layer({ resolveCliRunner: Effect.succeed(ARCHIVE) }),
+        );
+        yield* Effect.gen(function* () {
+          const manager = yield* SshTunnel.SshEnvironmentManager;
+          yield* manager.ensureEnvironment({
+            alias: "box",
+            hostname: "box",
+            username: null,
+            port: null,
+          });
+          assert.equal(forwarding, "127.0.0.1:41773:127.0.0.1:3773");
+        }).pipe(Effect.provide(layer), Effect.scoped);
+      }),
+  );
+
+  it.live.each([".local/bin", ".t3/bin"])(
+    "reuses an exact-release installed CLI in %s",
+    (installDirectory) =>
+      Effect.gen(function* () {
+        const result = yield* runArchiveRunner(ARCHIVE.archiveVersion, installDirectory);
+        assert.equal(result.exitCode, 0, result.stderr);
+        assert.equal(result.stdout, "installed:pair --json\n");
+        assert.isFalse(result.runtimeExists);
+      }),
+  );
+
+  it.live.each(["1.2.2", "1.2.3", "1.2.3-nightly.20260911.4", "1.2.3-preview.20260911.3"])(
+    "does not adopt installed release %s when the exact archive is unavailable",
+    (installedVersion) =>
+      Effect.gen(function* () {
+        const result = yield* runArchiveRunner(installedVersion);
+        assert.notEqual(result.exitCode, 0);
+        assert.include(result.stderr, `/releases/download/v${ARCHIVE.archiveVersion}/SHA256SUMS`);
+        assert.include(result.stderr, `Could not download t3 ${ARCHIVE.archiveVersion}`);
+        assert.isFalse(result.runtimeExists);
+      }),
+  );
+
+  it.live(
+    "skips an installed CLI whose probes hang and falls through to the archive download",
+    () =>
+      Effect.gen(function* () {
+        const result = yield* runArchiveRunner(ARCHIVE.archiveVersion, ".t3/bin", {
+          cliScript: `#!/bin/sh\ncase "$1" in\n--version) sleep 300;;\n__ssh-helper) sleep 300;;\n*) printf 'installed:%s\\n' "$*";;\nesac\n`,
+        });
+        assert.notEqual(result.exitCode, 0);
+        assert.include(result.stderr, `v${ARCHIVE.archiveVersion}/SHA256SUMS`);
+        assert.isFalse(result.runtimeExists);
+      }),
+  );
+
+  it.live("skips a non-regular file at the desktop CLI path", () =>
+    Effect.gen(function* () {
+      const result = yield* runArchiveRunner(ARCHIVE.archiveVersion, ".t3/bin", { fifo: true });
+      assert.notEqual(result.exitCode, 0);
+      assert.include(result.stderr, `v${ARCHIVE.archiveVersion}/SHA256SUMS`);
+      assert.isFalse(result.runtimeExists);
+    }),
+  );
+
   it.live("distinguishes an incompatible remote Node from a missing executable", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -343,12 +576,13 @@ describe("ssh tunnel scripts", () => {
   );
 
   it.each([
-    { installed: ARCHIVE.archiveVersion, status: 0, reuses: true },
-    { installed: ARCHIVE.archiveVersion, status: 1, reuses: false },
-    { installed: "9.9.9", status: 0, reuses: false },
+    { installed: ARCHIVE.archiveVersion, status: 0, helperStatus: 0, reuses: true },
+    { installed: ARCHIVE.archiveVersion, status: 1, helperStatus: 0, reuses: false },
+    { installed: ARCHIVE.archiveVersion, status: 0, helperStatus: 1, reuses: false },
+    { installed: "9.9.9", status: 0, helperStatus: 0, reuses: false },
   ])(
-    "reuses a host t3 only at exactly the requested version: installed $installed, status $status",
-    ({ installed, status, reuses }) => {
+    "reuses a host t3 only after both probes pass: installed $installed, version status $status, helper status $helperStatus",
+    ({ installed, status, helperStatus, reuses }) => {
       const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-ssh-runner-"));
       try {
         const bin = NodePath.join(root, "bin");
@@ -362,7 +596,7 @@ describe("ssh tunnel scripts", () => {
         );
         NodeFS.writeFileSync(
           NodePath.join(bin, "t3"),
-          `#!/bin/sh\ncase "$1" in --version) echo "t3 v${installed}"; exit ${status} ;; *) echo "host t3 $*" ;; esac\n`,
+          `#!/bin/sh\ncase "$1" in --version) echo "t3 v${installed}"; exit ${status} ;; __ssh-helper) exit ${helperStatus} ;; *) echo "host t3 $*" ;; esac\n`,
           { mode: 0o755 },
         );
         const runner = NodePath.join(root, "run-t3.sh");
@@ -756,6 +990,90 @@ describe("ssh tunnel scripts", () => {
           }
         }
       }).pipe(Effect.provide(layer), Effect.scoped);
+    }),
+  );
+
+  it.effect.each(["disconnect", "scope close"] as const)(
+    "leaves the peer server running on %s when only the tunnel is owned",
+    (closing) =>
+      Effect.gen(function* () {
+        let stops = 0;
+        let closed = 0;
+        const spawner = ChildProcessSpawner.make((command) =>
+          Effect.sync(() => {
+            const args = commandArgs(command);
+            if (args.includes("-G")) return makeSuccessfulProcess("");
+            if (args.includes("-N"))
+              return makeRunningProcess(() => {
+                closed += 1;
+              });
+            if (launchStateKey(command) !== undefined) {
+              return makeSuccessfulProcess('{"remotePort":3773,"serverKind":"managed"}\n');
+            }
+            stops += 1;
+            return makeSuccessfulProcess('{"stopped":true}\n');
+          }),
+        );
+        const layer = Layer.mergeAll(
+          NodeServices.layer,
+          NodeCrypto.layer,
+          Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Layer.succeed(HttpClient.HttpClient, testHttpClient),
+          Layer.succeed(NetService.NetService, testNetService),
+          SshAuth.SshPasswordPrompt.disabledLayer,
+          SshTunnel.SshEnvironmentManager.layer({
+            resolveCliRunner: Effect.succeed(ARCHIVE),
+            stopRemoteOnDisconnect: false,
+          }),
+        );
+        yield* Effect.gen(function* () {
+          const manager = yield* SshTunnel.SshEnvironmentManager;
+          const target = { alias: "devbox", hostname: "devbox", username: null, port: null };
+          yield* manager.ensureEnvironment(target);
+          if (closing === "disconnect") yield* manager.disconnectEnvironment(target);
+        }).pipe(Effect.provide(layer), Effect.scoped);
+        assert.isAbove(closed, 0);
+        assert.equal(stops, 0);
+      }),
+  );
+
+  it.effect("replaces a tunnel whose ssh process exited even if its port still answers", () =>
+    Effect.gen(function* () {
+      let tunnels = 0;
+      let firstTunnelRunning = true;
+      const spawner = ChildProcessSpawner.make((command) =>
+        Effect.sync(() => {
+          const args = commandArgs(command);
+          if (args.includes("-G")) return makeSuccessfulProcess("");
+          if (args.includes("-N")) {
+            const tunnel = makeRunningProcess(() => undefined);
+            return ++tunnels === 1
+              ? { ...tunnel, isRunning: Effect.sync(() => firstTunnelRunning) }
+              : tunnel;
+          }
+          if (launchStateKey(command) !== undefined) {
+            return makeSuccessfulProcess('{"remotePort":3773}\n');
+          }
+          return makeSuccessfulProcess('{"stopped":true}\n');
+        }),
+      );
+      const layer = Layer.mergeAll(
+        NodeServices.layer,
+        NodeCrypto.layer,
+        Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Layer.succeed(HttpClient.HttpClient, testHttpClient),
+        Layer.succeed(NetService.NetService, testNetService),
+        SshAuth.SshPasswordPrompt.disabledLayer,
+        SshTunnel.SshEnvironmentManager.layer({ resolveCliRunner: Effect.succeed(ARCHIVE) }),
+      );
+      yield* Effect.gen(function* () {
+        const manager = yield* SshTunnel.SshEnvironmentManager;
+        const target = { alias: "devbox", hostname: "devbox", username: null, port: null };
+        yield* manager.ensureEnvironment(target);
+        firstTunnelRunning = false;
+        yield* manager.ensureEnvironment(target);
+      }).pipe(Effect.provide(layer), Effect.scoped);
+      assert.equal(tunnels, 2);
     }),
   );
 

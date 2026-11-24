@@ -13,6 +13,7 @@ import {
   type ConnectionRoute,
 } from "./catalog.ts";
 import { BearerConnectionTarget, type ConnectionTarget } from "./model.ts";
+import { parseLanDiscoveryCandidate } from "./lanDiscoveryProof.ts";
 import { mFallback, msg } from "gt-i18n";
 import type { MFunctionType } from "gt-i18n/types";
 
@@ -40,7 +41,14 @@ export function connectionRouteId(target: ConnectionTarget): string {
 }
 
 export function connectionRoutes(entry: ConnectionCatalogEntry): ReadonlyArray<ConnectionRoute> {
-  return [{ target: entry.target, profile: entry.profile }, ...(entry.alternateRoutes ?? [])];
+  return [
+    {
+      target: entry.target,
+      profile: entry.profile,
+      ...(entry.discovery ? { discovery: true as const } : {}),
+    },
+    ...(entry.alternateRoutes ?? []),
+  ];
 }
 
 export function entryWithRoutes(
@@ -51,11 +59,12 @@ export function entryWithRoutes(
   if (first === undefined) {
     throw new Error("A saved environment needs at least one route.");
   }
-  const { alternateRoutes: _previous, ...base } = entry;
+  const { alternateRoutes: _previous, discovery: _discovery, ...base } = entry;
   return {
     ...base,
     target: first.target,
     profile: first.profile,
+    ...(first.discovery ? { discovery: true as const } : {}),
     ...(rest.length === 0 ? {} : { alternateRoutes: rest }),
   };
 }
@@ -140,16 +149,41 @@ const ROUTE_KIND_RANK: Record<ConnectionRouteKind, number> = {
   relay: 5,
 };
 
+export function isLanDpopRoute(route: ConnectionRoute): boolean {
+  const profile = Option.getOrNull(route.profile);
+  return profile?._tag === "BearerConnectionProfile" && profile.lanDpop === true;
+}
+
+const CLEARTEXT_LAN_FALLBACK_RANK = ROUTE_KIND_RANK.relay + 1;
+
+function isCleartextLanFallback(route: ConnectionRoute): boolean {
+  const profile = Option.getOrNull(route.profile);
+  if (
+    profile?._tag !== "BearerConnectionProfile" ||
+    !profile.httpBaseUrl.startsWith("http:") ||
+    connectionRouteKind(route) !== "lan"
+  ) {
+    return false;
+  }
+  return profile.lanDpop === true || profile.authorization === "t3-connect";
+}
+
+const routeRank = (route: ConnectionRoute) =>
+  isCleartextLanFallback(route)
+    ? CLEARTEXT_LAN_FALLBACK_RANK
+    : ROUTE_KIND_RANK[connectionRouteKind(route)];
+
 export function insertRoute(
   routes: ReadonlyArray<ConnectionRoute>,
   route: ConnectionRoute,
   { aheadOfSameKind = false }: { readonly aheadOfSameKind?: boolean } = {},
 ): ReadonlyArray<ConnectionRoute> {
   const kind = connectionRouteKind(route);
-  const rank = ROUTE_KIND_RANK[kind];
+  const rank = routeRank(route);
   const index = routes.findIndex((existing) => {
-    const existingKind = connectionRouteKind(existing);
-    return ROUTE_KIND_RANK[existingKind] > rank || (aheadOfSameKind && existingKind === kind);
+    return (
+      routeRank(existing) > rank || (aheadOfSameKind && connectionRouteKind(existing) === kind)
+    );
   });
   return index === -1
     ? [...routes, route]
@@ -259,6 +293,7 @@ export function mergeLearnedRoutes(input: {
   readonly reported: ReadonlyArray<ReportedEndpoint>;
   /** Plain HTTP routes are unusable from an HTTPS page (mixed content). */
   readonly allowInsecure: boolean;
+  readonly lanCredential?: boolean;
 }): ReadonlyArray<ConnectionRoute> | null {
   const { entry } = input;
   const active = input.activeRoute.target;
@@ -277,6 +312,14 @@ export function mergeLearnedRoutes(input: {
     authorization === undefined && active._tag === "BearerConnectionTarget"
       ? credentialConnectionId(active.connectionId)
       : undefined;
+  const savedParentId = savedLanCredentialParentId(saved);
+  const activeParentId =
+    sharedCredential !== undefined && !tokenAllowsPlainHttp(saved, sharedCredential)
+      ? sharedCredential
+      : null;
+  const lanParentId = activeParentId ?? savedParentId;
+  const canUseLanCredential =
+    lanParentId !== null && (input.lanCredential === true || isLanDpopRoute(input.activeRoute));
   const reported = new Map<string, URL>();
   const tailscaleOrigins = new Set<string>();
   for (const endpoint of input.reported) {
@@ -310,6 +353,13 @@ export function mergeLearnedRoutes(input: {
       ];
     }
     if (url === null || !reported.has(normalized(url)) || known.has(normalized(url))) return [];
+    if (
+      canUseLanCredential &&
+      lanParentId !== null &&
+      replacesWithLanCredential(route, url, lanParentId, tailscaleOrigins)
+    ) {
+      return [];
+    }
     if (sendsTokenInClear(saved, route, tailscaleOrigins.has(normalized(url)))) return [];
     known.add(normalized(url));
     return [withNetwork(route, tailscaleOrigins.has(normalized(url)))];
@@ -317,19 +367,18 @@ export function mergeLearnedRoutes(input: {
   let next: ReadonlyArray<ConnectionRoute> = kept;
   for (const url of reported.values()) {
     if (known.has(url.origin)) continue;
-    if (
+    const needsLanCredential =
       url.protocol === "http:" &&
       sharedCredential !== undefined &&
       !tailscaleOrigins.has(url.origin) &&
-      !tokenAllowsPlainHttp(saved, sharedCredential)
-    ) {
-      continue;
-    }
+      !tokenAllowsPlainHttp(saved, sharedCredential);
+    if (needsLanCredential && (!canUseLanCredential || !lanCredentialCanProve(url))) continue;
+    const lanDpop = needsLanCredential && canUseLanCredential && lanParentId !== null;
     const httpBaseUrl = `${url.origin}/`;
     const connectionId = learnedConnectionId(
       entry.target.environmentId,
       url.origin,
-      sharedCredential,
+      lanDpop ? lanParentId : sharedCredential,
     );
     next = insertRoute(next, {
       target: new BearerConnectionTarget({
@@ -345,7 +394,8 @@ export function mergeLearnedRoutes(input: {
           httpBaseUrl,
           wsBaseUrl: `${url.protocol === "https:" ? "wss:" : "ws:"}//${url.host}/`,
           learned: true,
-          ...(authorization === undefined ? {} : { authorization }),
+          ...(lanDpop || authorization === undefined ? {} : { authorization }),
+          ...(lanDpop ? { lanDpop: true as const } : {}),
           ...(tailscaleOrigins.has(url.origin) ? { network: "tailscale" as const } : {}),
         }),
       ),
@@ -353,12 +403,59 @@ export function mergeLearnedRoutes(input: {
   }
   const signature = (routes: ReadonlyArray<ConnectionRoute>) =>
     routes
-      .map(
-        (route) =>
-          `${connectionRouteId(route.target)} ${routeHttpBaseUrl(route) ?? ""} ${connectionRouteKind(route)}`,
-      )
+      .map((route) => {
+        const profile = Option.getOrNull(route.profile);
+        const bearer = profile?._tag === "BearerConnectionProfile" ? profile : null;
+        return `${connectionRouteId(route.target)} ${routeHttpBaseUrl(route) ?? ""} ${connectionRouteKind(route)} ${bearer?.lanDpop === true ? "lanDpop" : ""} ${bearer?.authorization ?? ""}`;
+      })
       .join("\n");
   return signature(saved) === signature(next) ? null : next;
+}
+
+// The proof binds the socket's IPv4 address, so a route with a host name can never verify.
+const lanCredentialCanProve = (url: URL) => parseLanDiscoveryCandidate(url.href) !== null;
+
+function replacesWithLanCredential(
+  route: ConnectionRoute,
+  httpBaseUrl: string,
+  parentId: string,
+  tailscaleOrigins: ReadonlySet<string>,
+): boolean {
+  let url: URL;
+  try {
+    url = new URL(httpBaseUrl);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "http:" || tailscaleOrigins.has(url.origin) || !lanCredentialCanProve(url)) {
+    return false;
+  }
+  const profile = Option.getOrNull(route.profile);
+  return !(
+    connectionRouteId(route.target) ===
+      learnedConnectionId(route.target.environmentId, url.origin, parentId) &&
+    profile?._tag === "BearerConnectionProfile" &&
+    profile.lanDpop === true &&
+    profile.authorization === undefined
+  );
+}
+
+function savedLanCredentialParentId(routes: ReadonlyArray<ConnectionRoute>): string | null {
+  for (const route of routes) {
+    const profile = Option.getOrNull(route.profile);
+    if (
+      route.target._tag !== "BearerConnectionTarget" ||
+      profile?._tag !== "BearerConnectionProfile" ||
+      profile.learned === true ||
+      profile.authorization === "t3-connect" ||
+      profile.lanDpop === true
+    ) {
+      continue;
+    }
+    const parentId = credentialConnectionId(route.target.connectionId);
+    if (!tokenAllowsPlainHttp(routes, parentId)) return parentId;
+  }
+  return null;
 }
 
 // A paired token goes to a plain HTTP address outside the tailnet only when
@@ -388,7 +485,11 @@ export function sendsTokenInClear(
   tailscale?: boolean,
 ): boolean {
   const profile = Option.getOrNull(route.profile);
-  if (profile?._tag !== "BearerConnectionProfile" || profile.authorization === "t3-connect") {
+  if (
+    profile?._tag !== "BearerConnectionProfile" ||
+    profile.authorization === "t3-connect" ||
+    profile.lanDpop === true
+  ) {
     return false;
   }
   if ((tailscale ?? profile.network === "tailscale") || !profile.httpBaseUrl.startsWith("http:")) {
@@ -404,6 +505,132 @@ export function sendsTokenInClear(
 export function usableRoutes(entry: ConnectionCatalogEntry): ReadonlyArray<ConnectionRoute> {
   const routes = connectionRoutes(entry);
   return routes.filter((route) => !sendsTokenInClear(routes, route));
+}
+
+export function lanCredentialParentId(input: {
+  readonly entry: ConnectionCatalogEntry;
+  readonly activeRoute: ConnectionRoute;
+  readonly reported: ReadonlyArray<ReportedEndpoint>;
+}): string | null {
+  const { target } = input.activeRoute;
+  const profile = Option.getOrNull(input.activeRoute.profile);
+  if (
+    target._tag !== "BearerConnectionTarget" ||
+    profile?._tag !== "BearerConnectionProfile" ||
+    profile.authorization === "t3-connect" ||
+    profile.lanDpop === true
+  ) {
+    return null;
+  }
+  const saved = connectionRoutes(input.entry);
+  const parentId = credentialConnectionId(target.connectionId);
+  if (tokenAllowsPlainHttp(saved, parentId)) return null;
+  const known = new Set(
+    saved.flatMap((route) => {
+      if (isLearned(route)) return [];
+      const httpBaseUrl = routeHttpBaseUrl(route);
+      if (httpBaseUrl === null) return [];
+      try {
+        return [new URL(httpBaseUrl).origin];
+      } catch {
+        return [];
+      }
+    }),
+  );
+  return input.reported.some((endpoint) => acceptedLanOrigin(endpoint, known) !== null)
+    ? parentId
+    : null;
+}
+
+function acceptedLanOrigin(endpoint: ReportedEndpoint, known: ReadonlySet<string>): string | null {
+  if (endpoint.kind === "tailnet") return null;
+  let url: URL;
+  try {
+    url = new URL(endpoint.httpBaseUrl);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "http:" || isLocalLoopbackHost(url.hostname) || known.has(url.origin)) {
+    return null;
+  }
+  return url.origin;
+}
+
+export function lanCredentialConnectionId(parentId: string): string {
+  return `lan-credential:${parentId}`;
+}
+
+export function discoveredRoutes(
+  entry: ConnectionCatalogEntry,
+  candidates: ReadonlyArray<string>,
+): ReadonlyArray<ConnectionRoute> {
+  const saved = connectionRoutes(entry);
+  const paired = saved.find((route) => {
+    const profile = Option.getOrNull(route.profile);
+    return (
+      route.target._tag === "BearerConnectionTarget" &&
+      profile?._tag === "BearerConnectionProfile" &&
+      !profile.learned &&
+      profile.authorization !== "t3-connect" &&
+      profile.httpBaseUrl.startsWith("http:") &&
+      ["lan", "public"].includes(connectionRouteKind(route))
+    );
+  });
+  const parentId = savedLanCredentialParentId(saved);
+  const parentRoute =
+    parentId === null
+      ? undefined
+      : saved.find((route) => connectionRouteId(route.target) === parentId);
+  const learnedOverConnect = saved.some(
+    (route) => isCleartextLanFallback(route) && !isLanDpopRoute(route),
+  );
+  const source =
+    paired ?? saved.find(isLanDpopRoute) ?? (learnedOverConnect ? parentRoute : undefined);
+  if (!entry.enabled || !source || source.target._tag !== "BearerConnectionTarget") return [];
+  const known = new Set(
+    saved
+      .map(routeHttpBaseUrl)
+      .filter((url): url is string => url !== null)
+      .flatMap((url) => {
+        try {
+          return [new URL(url).origin];
+        } catch {
+          return [];
+        }
+      }),
+  );
+  const result: ConnectionRoute[] = [];
+  for (const candidate of candidates.slice(0, 32)) {
+    const url = parseLanDiscoveryCandidate(candidate);
+    if (!url || known.has(url.origin)) continue;
+    known.add(url.origin);
+    const connectionId = learnedConnectionId(
+      entry.target.environmentId,
+      url.origin,
+      credentialConnectionId(source.target.connectionId),
+    );
+    const route: ConnectionRoute = {
+      discovery: true,
+      target: new BearerConnectionTarget({
+        environmentId: entry.target.environmentId,
+        label: entry.target.label,
+        connectionId,
+      }),
+      profile: Option.some(
+        new BearerConnectionProfile({
+          connectionId,
+          environmentId: entry.target.environmentId,
+          label: entry.target.label,
+          httpBaseUrl: `${url.origin}/`,
+          wsBaseUrl: `ws://${url.host}/`,
+          learned: true,
+          ...(paired === undefined ? { lanDpop: true as const } : {}),
+        }),
+      ),
+    };
+    if (!sendsTokenInClear(saved, route)) result.push(route);
+  }
+  return result;
 }
 
 export interface ReportedEndpoint {
@@ -426,6 +653,7 @@ function withNetwork(route: ConnectionRoute, tailscale: boolean): ConnectionRout
         wsBaseUrl: profile.wsBaseUrl,
         ...(profile.learned === undefined ? {} : { learned: profile.learned }),
         ...(profile.authorization === undefined ? {} : { authorization: profile.authorization }),
+        ...(profile.lanDpop === undefined ? {} : { lanDpop: profile.lanDpop }),
         ...(tailscale ? { network: "tailscale" as const } : {}),
       }),
     ),

@@ -14,6 +14,7 @@ import * as ClientCapabilities from "../platform/capabilities.ts";
 import * as RemoteEnvironmentAuthorization from "../authorization/service.ts";
 import {
   BearerConnectionCredential,
+  BearerConnectionProfile,
   type ConnectionCatalogEntry,
   SshConnectionProfile,
   type ConnectionCredential,
@@ -21,7 +22,9 @@ import {
 } from "./catalog.ts";
 import * as ConnectionCredentialStore from "./credentialStore.ts";
 import {
+  ConnectionBlockedError,
   ConnectionTransientError,
+  BearerConnectionTarget,
   PrimaryConnectionTarget,
   SshConnectionTarget,
   type ConnectionTarget,
@@ -54,11 +57,17 @@ function catalogEntry(
 }
 
 const makeDependencies = Effect.fn("TestConnectionResolver.makeDependencies")((options?: {
+  readonly verifyLan?: (input: {
+    readonly token: string;
+    readonly environmentId: string;
+    readonly candidate: string;
+  }) => Effect.Effect<boolean>;
   readonly profiles?: ReadonlyArray<ConnectionProfile>;
   readonly profileStore?: ConnectionProfileStore.ConnectionProfileStore["Service"];
   readonly credentials?: ReadonlyArray<readonly [string, ConnectionCredential]>;
   readonly authorizeBearer?: RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization["Service"]["authorizeBearer"];
   readonly authorizeDpop?: RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization["Service"]["authorizeDpop"];
+  readonly authorizeLanDpop?: RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization["Service"]["authorizeLanDpop"];
   readonly primaryBearerToken?: string;
   readonly prepareSsh?: ClientCapabilities.SshEnvironmentGateway["Service"]["prepare"];
   readonly descriptorProtocolVersion?: number | null | undefined;
@@ -107,6 +116,17 @@ const makeDependencies = Effect.fn("TestConnectionResolver.makeDependencies")((o
             expiresAtEpochMs: Number.MAX_SAFE_INTEGER,
           },
         })),
+    authorizeLanDpop:
+      options?.authorizeLanDpop ??
+      ((input) =>
+        Effect.succeed({
+          environmentId: input.expectedEnvironmentId,
+          label: "Authorized LAN environment",
+          httpBaseUrl: input.httpBaseUrl,
+          socketUrl: "ws://authorized.example.test/ws?wsTicket=lan",
+          httpAuthorization: { _tag: "LanDpop" as const, accessToken: input.accessToken },
+        })),
+    mintLanCredential: () => Effect.die("unused"),
     authorizeDpopHttp: () => Effect.die("unused"),
     authorizeDirectDpop: () => Effect.die("unused"),
     authorizeDirectDpopHttp: () => Effect.die("unused"),
@@ -131,6 +151,9 @@ const makeDependencies = Effect.fn("TestConnectionResolver.makeDependencies")((o
   });
 
   const layerDependencies = Layer.mergeAll(
+    Layer.succeed(ClientCapabilities.LanDiscoveryVerifier, {
+      verify: options?.verifyLan ?? (() => Effect.succeed(false)),
+    }),
     RpcHttp.layerRemoteHttpClient((() =>
       Promise.resolve(
         Response.json({
@@ -171,6 +194,239 @@ const makeDependencies = Effect.fn("TestConnectionResolver.makeDependencies")((o
 });
 
 describe("ConnectionResolver", () => {
+  it.effect("rechecks the discovered endpoint before every bearer authorization", () =>
+    Effect.gen(function* () {
+      const checks = yield* Ref.make(0);
+      const target = new BearerConnectionTarget({
+        environmentId: ENVIRONMENT_ID,
+        label: "LAN",
+        connectionId: "learned:environment-1:http://192.168.1.23:3000@paired",
+      });
+      const profile = new BearerConnectionProfile({
+        connectionId: target.connectionId,
+        environmentId: ENVIRONMENT_ID,
+        label: "LAN",
+        httpBaseUrl: "http://192.168.1.23:3000/",
+        wsBaseUrl: "ws://192.168.1.23:3000/",
+        learned: true,
+      });
+      const layerBroker = yield* makeDependencies({
+        credentials: [["paired", new BearerConnectionCredential({ token: "paired-token" })]],
+        verifyLan: () => Ref.update(checks, (value) => value + 1).pipe(Effect.as(true)),
+      });
+      const broker = yield* ConnectionResolver.ConnectionResolver.pipe(Effect.provide(layerBroker));
+      const entry = { ...catalogEntry(target, Option.some(profile)), discovery: true as const };
+      const first = yield* broker.prepare(entry);
+      const second = yield* broker.prepare(entry);
+      expect(first.httpAuthorization).toEqual({ _tag: "Bearer", token: "paired-token" });
+      expect(second.httpAuthorization).toEqual({ _tag: "Bearer", token: "paired-token" });
+      expect(yield* Ref.get(checks)).toBe(2);
+    }),
+  );
+
+  it.effect("connects a LAN credential route without offering the paired token", () =>
+    Effect.gen(function* () {
+      const target = new BearerConnectionTarget({
+        environmentId: ENVIRONMENT_ID,
+        label: "LAN",
+        connectionId: "learned:environment-1:http://192.168.1.23:3000@paired",
+      });
+      const profile = new BearerConnectionProfile({
+        connectionId: target.connectionId,
+        environmentId: ENVIRONMENT_ID,
+        label: "LAN",
+        httpBaseUrl: "http://192.168.1.23:3000/",
+        wsBaseUrl: "ws://192.168.1.23:3000/",
+        learned: true,
+        lanDpop: true,
+      });
+      const entry = catalogEntry(target, Option.some(profile));
+      const authorizeBearer = () => Effect.die("The paired token must stay off plain HTTP.");
+      const paired = new BearerConnectionCredential({ token: "paired-token" });
+      const lan = new BearerConnectionCredential({ token: "lan-token" });
+
+      const usable = yield* ConnectionResolver.ConnectionResolver.pipe(
+        Effect.provide(
+          yield* makeDependencies({
+            credentials: [
+              ["paired", paired],
+              ["lan-credential:paired", lan],
+            ],
+            authorizeBearer,
+            verifyLan: () => Effect.succeed(true),
+          }),
+        ),
+      );
+      expect((yield* usable.prepare(entry)).httpAuthorization).toEqual({
+        _tag: "LanDpop",
+        accessToken: "lan-token",
+      });
+
+      const missing = yield* ConnectionResolver.ConnectionResolver.pipe(
+        Effect.provide(
+          yield* makeDependencies({ credentials: [["paired", paired]], authorizeBearer }),
+        ),
+      );
+      expect((yield* missing.prepare(entry).pipe(Effect.flip)).reason).toBe("endpoint-unavailable");
+
+      const rejections = yield* Ref.make(0);
+      const rejected = yield* ConnectionResolver.ConnectionResolver.pipe(
+        Effect.provide(
+          yield* makeDependencies({
+            credentials: [
+              ["paired", paired],
+              ["lan-credential:paired", lan],
+            ],
+            authorizeBearer,
+            verifyLan: () => Effect.succeed(true),
+            authorizeLanDpop: () =>
+              Ref.update(rejections, (count) => count + 1).pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    new ConnectionBlockedError({ reason: "authentication", detail: "Revoked." }),
+                  ),
+                ),
+              ),
+          }),
+        ),
+      );
+      expect((yield* rejected.prepare(entry).pipe(Effect.flip)).reason).toBe(
+        "endpoint-unavailable",
+      );
+      yield* rejected.prepare(entry).pipe(Effect.flip);
+      expect(yield* Ref.get(rejections)).toBe(1);
+    }),
+  );
+
+  it.effect(
+    "keeps a LAN credential when the endpoint cannot prove itself or the proof clock is wrong",
+    () =>
+      Effect.gen(function* () {
+        const target = new BearerConnectionTarget({
+          environmentId: ENVIRONMENT_ID,
+          label: "LAN",
+          connectionId: "learned:environment-1:http://192.168.1.23:3000@paired",
+        });
+        const profile = new BearerConnectionProfile({
+          connectionId: target.connectionId,
+          environmentId: ENVIRONMENT_ID,
+          label: "LAN",
+          httpBaseUrl: "http://192.168.1.23:3000/",
+          wsBaseUrl: "ws://192.168.1.23:3000/",
+          learned: true,
+          lanDpop: true,
+        });
+        const entry = catalogEntry(target, Option.some(profile));
+        const paired = new BearerConnectionCredential({ token: "paired-token" });
+        const lan = new BearerConnectionCredential({ token: "lan-token" });
+        const proved = yield* Ref.make(false);
+        const authorizations = yield* Ref.make(0);
+        const broker = yield* ConnectionResolver.ConnectionResolver.pipe(
+          Effect.provide(
+            yield* makeDependencies({
+              credentials: [
+                ["paired", paired],
+                ["lan-credential:paired", lan],
+              ],
+              verifyLan: () => Ref.get(proved),
+              authorizeLanDpop: () =>
+                Ref.update(authorizations, (count) => count + 1).pipe(
+                  Effect.andThen(
+                    Effect.fail(
+                      new ConnectionBlockedError({
+                        reason: "authentication",
+                        detail: "The environment credential is invalid.",
+                        failureCause: "clock_skew",
+                        dpopFailureReason: "time_window",
+                        hop: "server",
+                        via: "direct",
+                      }),
+                    ),
+                  ),
+                ),
+            }),
+          ),
+        );
+
+        const unproven = yield* broker.prepare(entry).pipe(Effect.flip);
+        expect(unproven.reason).toBe("endpoint-unavailable");
+        expect(unproven.message).toBe("The endpoint could not prove its identity.");
+        expect(yield* Ref.get(authorizations)).toBe(0);
+
+        yield* Ref.set(proved, true);
+        const skewed = yield* broker.prepare(entry).pipe(Effect.flip);
+        expect(skewed).toMatchObject({
+          _tag: "ConnectionTransientError",
+          reason: "endpoint-unavailable",
+          failureCause: "clock_skew",
+          dpopFailureReason: "time_window",
+          via: "direct",
+        });
+        expect(skewed.message).not.toContain("renew");
+
+        const device = yield* ConnectionResolver.ConnectionResolver.pipe(
+          Effect.provide(
+            yield* makeDependencies({
+              credentials: [
+                ["paired", paired],
+                ["lan-credential:paired", lan],
+              ],
+              verifyLan: () => Effect.succeed(true),
+              authorizeLanDpop: () =>
+                Effect.fail(
+                  new ConnectionBlockedError({
+                    reason: "authentication",
+                    detail: "Could not create the websocket authorization proof.",
+                    hop: "device",
+                  }),
+                ),
+            }),
+          ),
+        );
+        const local = yield* device.prepare(entry).pipe(Effect.flip);
+        expect(local._tag).toBe("ConnectionTransientError");
+        expect(local.hop).toBe("device");
+        expect(local.message).not.toContain("renew");
+
+        yield* Ref.set(proved, true);
+        const retry = yield* broker.prepare(entry).pipe(Effect.flip);
+        expect(retry.failureCause).toBe("clock_skew");
+        expect(yield* Ref.get(authorizations)).toBe(2);
+      }),
+  );
+
+  it.effect("does not authorize a discovered endpoint when its proof fails", () =>
+    Effect.gen(function* () {
+      const offered = yield* Ref.make<ReadonlyArray<string>>([]);
+      const target = new BearerConnectionTarget({
+        environmentId: ENVIRONMENT_ID,
+        label: "LAN",
+        connectionId: "learned:environment-1:http://192.168.1.23:3000@paired",
+      });
+      const profile = new BearerConnectionProfile({
+        connectionId: target.connectionId,
+        environmentId: ENVIRONMENT_ID,
+        label: "LAN",
+        httpBaseUrl: "http://192.168.1.23:3000/",
+        wsBaseUrl: "ws://192.168.1.23:3000/",
+        learned: true,
+      });
+      const layerBroker = yield* makeDependencies({
+        credentials: [["paired", new BearerConnectionCredential({ token: "paired-token" })]],
+        authorizeBearer: (input) =>
+          Ref.update(offered, (values) => [...values, input.bearerToken]).pipe(
+            Effect.andThen(Effect.die("unexpected authorization")),
+          ),
+      });
+      const broker = yield* ConnectionResolver.ConnectionResolver.pipe(Effect.provide(layerBroker));
+      const result = yield* broker
+        .prepare({ ...catalogEntry(target, Option.some(profile)), discovery: true })
+        .pipe(Effect.flip);
+      expect(result.reason).toBe("endpoint-unavailable");
+      expect(yield* Ref.get(offered)).toEqual([]);
+    }),
+  );
+
   it.effect("blocks an old host during discovery before opening orchestration RPC", () =>
     Effect.gen(function* () {
       const layerBroker = yield* makeDependencies({ descriptorProtocolVersion: null });

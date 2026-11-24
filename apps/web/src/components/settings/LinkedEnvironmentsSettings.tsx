@@ -551,7 +551,7 @@ export function LinkEnvironmentDialog({
                   <span className="block text-xs text-muted-foreground">
                     <T>
                       This app has no address for <Var>{machine.label}</Var> that another machine
-                      can reach. Enter its https or Tailscale address.
+                      can reach. Enter its HTTPS, Tailscale, or ssh://user@host address.
                     </T>
                   </span>
                 ) : null}

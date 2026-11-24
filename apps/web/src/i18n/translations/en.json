@@ -3690,16 +3690,6 @@
   "a5d211c810f56b07": "Decline",
   "481373fbd4042755": "Only a session that manages access here can answer this.",
   "474774458cbb272c": "Address",
-  "89a68ae66d9266dc": "This app has no address for a machine that another machine can reach. Enter its https or Tailscale address.",
-  "71a4002c45077fe2": [
-    "This app has no address for ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " that another machine can reach. Enter its https or Tailscale address."
-  ],
   "7ebb23e6bf9b19e8": "Pairing code",
   "e8235ebb43ad7228": "Create a link on a machine: Settings → Sharing & access → Authorized clients → Create link, then paste its code here.",
   "a974e6c3c613e452": [
@@ -12815,5 +12805,18 @@
   "a133e14731aa61a0": "Skills library",
   "ccdf81fb39ee7921": "beta shared skills folder agents .agents/skills link claude codex antigravity cursor opencode one set accounts",
   "7ae5a73f951efbee": "Offer Lauren Tan's pstack workflows as skills in every provider. Run {command} once to choose models.",
-  "31ab377f509c09bf": "Reset pstack to default"
+  "31ab377f509c09bf": "Reset pstack to default",
+  "3b718923ce25187c": "For a LAN connection on macOS, open System Settings > Privacy & Security > Local Network and allow T3 Code (or your browser). Return here and retry; you do not need to pair again.",
+  "6f91bca937b0b79e": "Discovered endpoint could not prove its identity.",
+  "abc0e5804d7d832a": "This app has no address for a machine that another machine can reach. Enter its HTTPS, Tailscale, or ssh://user@host address.",
+  "5c86fb730057faa7": [
+    "This app has no address for ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " that another machine can reach. Enter its HTTPS, Tailscale, or ssh://user@host address."
+  ],
+  "10aaf6070f636b7e": "On macOS, check System Settings > Privacy & Security > Local Network and allow T3 Code, then retry. Also check that the host is awake and on the same network."
 }

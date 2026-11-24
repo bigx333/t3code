@@ -3690,16 +3690,6 @@
   "a5d211c810f56b07": "Avböj",
   "481373fbd4042755": "Bara en session som hanterar åtkomst här kan svara på det här.",
   "474774458cbb272c": "Adress",
-  "89a68ae66d9266dc": "Den här appen har ingen adress som en annan dator kan nå. Ange dess https- eller Tailscale-adress.",
-  "71a4002c45077fe2": [
-    "Den här appen har ingen adress till ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " som en annan dator kan nå. Ange dess https- eller Tailscale-adress."
-  ],
   "7ebb23e6bf9b19e8": "Parkopplingskod",
   "e8235ebb43ad7228": "Skapa en länk på en dator: Inställningar → Delning och åtkomst → Auktoriserade klienter → Skapa länk, och klistra sedan in koden här.",
   "a974e6c3c613e452": [
@@ -12813,5 +12803,18 @@
   "a133e14731aa61a0": "Färdighetsbibliotek",
   "ccdf81fb39ee7921": "beta delade färdigheter mapp agenter .agents/skills länk claude codex antigravity cursor opencode en uppsättning konton",
   "7ae5a73f951efbee": "Gör Lauren Tans pstack-arbetsflöden tillgängliga som färdigheter hos alla leverantörer. Kör {command} en gång för att välja modeller.",
-  "31ab377f509c09bf": "Återställ pstack till standard"
+  "31ab377f509c09bf": "Återställ pstack till standard",
+  "3b718923ce25187c": "För att ansluta via det lokala nätverket på macOS, öppna Systeminställningar → Integritet och säkerhet → Lokalt nätverk och ge T3 Code (eller webbläsaren) åtkomst. Gå tillbaka hit och försök igen. Du behöver inte parkoppla på nytt.",
+  "6f91bca937b0b79e": "Den upptäckta slutpunkten kunde inte verifiera sin identitet.",
+  "abc0e5804d7d832a": "Den här appen har ingen adress till en dator som en annan dator kan nå. Ange dess HTTPS- eller Tailscale-adress, eller en adress i formatet ssh://user@host.",
+  "5c86fb730057faa7": [
+    "Den här appen har ingen adress till ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " som en annan dator kan nå. Ange dess HTTPS- eller Tailscale-adress, eller en adress i formatet ssh://user@host."
+  ],
+  "10aaf6070f636b7e": "I macOS öppnar du Systeminställningar > Integritet och säkerhet > Lokalt nätverk. Tillåt T3 Code och försök igen. Kontrollera också att värddatorn är vaken och ansluten till samma nätverk."
 }

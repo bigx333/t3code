@@ -133,6 +133,7 @@ export type EnvironmentAuthInvalidReason = typeof EnvironmentAuthInvalidReason.T
 
 export const EnvironmentOperationForbiddenReason = Schema.Literals([
   "current_session_revoke_not_allowed",
+  "lan_credential_not_allowed",
 ]);
 export type EnvironmentOperationForbiddenReason = typeof EnvironmentOperationForbiddenReason.Type;
 
@@ -404,6 +405,11 @@ const EnvironmentPairingCredentialErrors = [
   EnvironmentHttpForbiddenError,
   ...EnvironmentScopedOperationErrors,
 ] as const;
+const EnvironmentLanCredentialErrors = [
+  EnvironmentOperationForbiddenError,
+  EnvironmentAuthInvalidError,
+  EnvironmentInternalError,
+] as const;
 const EnvironmentSessionRevokeErrors = [
   EnvironmentScopeRequiredError,
   EnvironmentOperationForbiddenError,
@@ -628,6 +634,13 @@ class EnvironmentAuthHttpApi extends HttpApiGroup.make("auth")
       params: AuthWebSocketTicketParams,
       success: AuthWebSocketTicketResult,
       error: [EnvironmentInternalError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("lanCredential", "/api/auth/lan-credential", {
+      headers: OptionalBearerHeaders,
+      success: AuthAccessTokenResult,
+      error: EnvironmentLanCredentialErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(

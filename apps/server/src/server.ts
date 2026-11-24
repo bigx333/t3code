@@ -170,6 +170,8 @@ import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as DirectEndpoints from "./environment/DirectEndpoints.ts";
 import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
 import * as AuthHttp from "./auth/http.ts";
+import * as LanDiscoveryHttp from "./auth/LanDiscoveryHttp.ts";
+import * as LanDiscoveryProof from "./auth/LanDiscoveryProof.ts";
 import * as ReplayMarkers from "./auth/replayMarkers.ts";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as CodexManagedTokenBroker from "./provider/CodexManagedTokenBroker.ts";
@@ -241,7 +243,12 @@ import * as RunFinalizationService from "./orchestration-v2/RunFinalizationServi
 import * as ProjectionMaintenance from "./orchestration-v2/ProjectionMaintenance.ts";
 import * as ProjectionStoreV2 from "./orchestration-v2/ProjectionStore.ts";
 import { makePersistedServerRuntimeState } from "./serverRuntimeState.ts";
-import { closeNonPrivateNetworkConnections, loopbackUrlHostForAddress } from "./startupAccess.ts";
+import {
+  closeNonPrivateNetworkConnections,
+  isLoopbackHost,
+  loopbackUrlHostForAddress,
+} from "./startupAccess.ts";
+import { advertiseLanService } from "@t3tools/shared/nodeLanDiscovery";
 import * as OrchestrationHttp from "./orchestration-v2/http.ts";
 import * as ProjectHttp from "./project/http.ts";
 import * as NetService from "@t3tools/shared/Net";
@@ -911,6 +918,7 @@ const layerMakeRoutes = Layer.mergeAll(
       Layer.provide(WebhookRoute.layer.pipe(Layer.provide(RelayDeliveryProof.layer))),
       Layer.provide(AuthHttp.layerAuthenticatedAuth),
     ),
+    LanDiscoveryHttp.layer.pipe(Layer.provide(LanDiscoveryProof.layer)),
     ServerHttp.layerOtlpTracesProxyRoute,
     ServerHttp.layerAssetRoute,
     ServerHttp.layerAttachmentUploadRoute,
@@ -955,7 +963,7 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.provide(
     Layer.mergeAll(PeerForwarding.layer, PeerThreadRelay.layer, PeerClientPairing.layer).pipe(
       Layer.provideMerge(PeerMcpClient.layer),
-      Layer.provideMerge(PeerLinks.layer),
+      Layer.provideMerge(PeerLinks.layerWithSsh),
     ),
   ),
   Layer.provide(
@@ -997,6 +1005,26 @@ const layerMakeServer = Layer.unwrap(
         yield* HttpServer.HttpServer;
         const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
         yield* startup.markHttpListening;
+      }),
+    );
+    const layerLanAdvertisement = Layer.effectDiscard(
+      Effect.gen(function* () {
+        const server = yield* HttpServer.HttpServer;
+        const identity = yield* ServerEnvironment.ServerEnvironmentIdentity;
+        yield* Effect.gen(function* () {
+          yield* awaitActivation;
+          const address = server.address;
+          if (isLoopbackHost(config.host) || typeof address === "string" || !("port" in address))
+            return;
+          const environmentId = yield* identity.getEnvironmentId;
+          const advertisement = yield* Effect.acquireRelease(
+            Effect.sync(() => advertiseLanService(environmentId, address.port)),
+            (advertisement) => Effect.sync(advertisement.stop),
+          );
+          return yield* Effect.forever(
+            Effect.sleep("15 seconds").pipe(Effect.andThen(Effect.sync(advertisement.refresh))),
+          );
+        }).pipe(Effect.ignoreCause, Effect.forkScoped);
       }),
     );
     const layerDesktopReadySignal = Layer.effectDiscard(
@@ -1413,6 +1441,7 @@ const layerMakeServer = Layer.unwrap(
     const layerServerApplication = Layer.mergeAll(
       layerRoutes,
       layerHttpListening,
+      layerLanAdvertisement,
       layerDesktopReadySignal,
       layerRuntimeState.pipe(Layer.provide(layerLauncher)),
       layerTailscaleServe,

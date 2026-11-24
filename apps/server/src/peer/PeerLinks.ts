@@ -36,6 +36,9 @@ import * as HttpClientError from "effect/http/HttpClientError";
 import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiClient from "effect/http-api/HttpApiClient";
 import { isLocalLoopbackHost, isTailnetHost } from "@t3tools/shared/hostClassification";
+import * as NetService from "@t3tools/shared/Net";
+import * as SshAuth from "@t3tools/ssh/auth";
+import * as SshTunnel from "@t3tools/ssh/tunnel";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
@@ -176,12 +179,32 @@ const failStorage = (cause: unknown) =>
  */
 const peerOrigin = (url: string) => {
   const parsed = URL.parse(url);
+  if (parsed?.protocol === "ssh:") {
+    // ssh config expands %h into ProxyCommand/Match exec shells, so the host must be plain.
+    if (
+      !/^(?:[a-zA-Z0-9_](?:[a-zA-Z0-9._-]*)|\[[0-9a-fA-F:.]+\])$/u.test(parsed.hostname) ||
+      parsed.password ||
+      (parsed.pathname !== "" && parsed.pathname !== "/") ||
+      parsed.search ||
+      parsed.hash ||
+      !/^[a-zA-Z0-9._-]*$/u.test(parsed.username)
+    ) {
+      return Effect.fail(
+        new PeerLinkError({
+          reason: "unreachable",
+          message:
+            "Use ssh://user@host, optionally with an SSH port. Passwords, paths and query parameters are not supported.",
+        }),
+      );
+    }
+    return Effect.succeed(parsed.href.replace(/\/$/u, ""));
+  }
   if (parsed === null || (parsed.protocol !== "https:" && parsed.protocol !== "http:")) {
     return Effect.fail(
       new PeerLinkError({
         reason: "unreachable",
         // Never the address as given: it may hold a username, password or query.
-        message: "That address is not an http or https address.",
+        message: "That address is not an http, https or ssh address.",
       }),
     );
   }
@@ -193,7 +216,7 @@ const peerOrigin = (url: string) => {
     return Effect.fail(
       new PeerLinkError({
         reason: "unreachable",
-        message: `${parsed.origin} is plain http, which would send the link's credentials unencrypted. Use its https address, or its Tailscale address.`,
+        message: `${parsed.origin} is plain http, which would send the link's credentials unencrypted. Use its https or Tailscale address, or ssh://user@host for an encrypted LAN connection.`,
       }),
     );
   }
@@ -250,6 +273,33 @@ const make = Effect.gen(function* () {
   const httpClient = yield* HttpClient.HttpClient;
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
+  const ssh = yield* SshTunnel.SshEnvironmentManager;
+  const sshContext =
+    yield* Effect.context<Effect.Services<ReturnType<typeof ssh.ensureEnvironment>>>();
+  const sshTarget = (origin: string) => {
+    const url = new URL(origin);
+    return {
+      alias: url.hostname,
+      hostname: url.hostname,
+      username: url.username || null,
+      port: url.port ? Number(url.port) : null,
+    };
+  };
+  const httpOrigin = Effect.fn("PeerLinks.httpOrigin")(function* (origin: string) {
+    if (!origin.startsWith("ssh:")) return origin;
+    const connection = yield* ssh.ensureEnvironment(sshTarget(origin)).pipe(
+      Effect.provide(sshContext),
+      Effect.mapError(
+        (cause) =>
+          new PeerLinkError({
+            reason: "unreachable",
+            message: `Could not open SSH to ${new URL(origin).hostname}: ${cause.message} Check SSH key access and the host key from this environment. On macOS, enable Remote Login on the destination and allow T3 Code under Privacy & Security > Local Network on the connecting Mac, then retry.`,
+            cause,
+          }),
+      ),
+    );
+    return new URL(connection.httpBaseUrl).origin;
+  });
   const isOwnLoopback = yield* LoopbackHost;
   const enabled = serverSettings.getSettings.pipe(
     Effect.map((settings) => settings.linkedEnvironmentsEnabled),
@@ -268,27 +318,35 @@ const make = Effect.gen(function* () {
     Effect.provideService(response, FetchHttpClient.RequestInit, { redirect: "manual" }),
   );
 
-  const clientFor = (origin: string) =>
-    HttpApiClient.make(PeerHttpApi, { baseUrl: origin }).pipe(
+  /** A client for an http(s) endpoint; an ssh address goes through `httpOrigin` first. */
+  const clientFor = (endpoint: string) =>
+    HttpApiClient.make(PeerHttpApi, { baseUrl: endpoint }).pipe(
       Effect.provideService(HttpClient.HttpClient, peerHttpClient),
     );
 
-  /** The environment answering at `origin`, or why nothing there answers as T3 Code. */
-  const probe = (origin: string) => {
-    const timeout = probeTimeout(origin);
-    return clientFor(origin).pipe(
-      Effect.flatMap((client) => client.metadata.descriptor()),
-      // A brief network drop must not list a live peer as down; the timeout still bounds both tries.
-      Effect.retry({
-        times: 1,
-        schedule: Schedule.spaced("1 second"),
-        while: (error) => certificateErrorCode(error) === undefined,
+  /**
+   * The environment answering at `origin` and the http(s) endpoint it answered
+   * on, or why nothing there answers as T3 Code.
+   */
+  const probe = (origin: string) =>
+    httpOrigin(origin).pipe(
+      Effect.flatMap((endpoint) => {
+        const timeout = probeTimeout(endpoint);
+        return clientFor(endpoint).pipe(
+          Effect.flatMap((client) => client.metadata.descriptor()),
+          // A brief network drop must not list a live peer as down; the timeout still bounds both tries.
+          Effect.retry({
+            times: 1,
+            schedule: Schedule.spaced("1 second"),
+            while: (error) => certificateErrorCode(error) === undefined,
+          }),
+          Effect.timeout(timeout),
+          // No cause: a decode error can carry the response body to the client.
+          Effect.mapError((error) => probeFailure(origin, error, timeout)),
+          Effect.map((peer) => ({ endpoint, peer })),
+        );
       }),
-      Effect.timeout(timeout),
-      // No cause: a decode error can carry the response body to the client.
-      Effect.mapError((error) => probeFailure(origin, error, timeout)),
     );
-  };
 
   /** Whether `url` answers as `environmentId`, counting any failure as no. */
   const answersAs = Effect.fn("PeerLinks.answersAs")(function* (
@@ -296,7 +354,7 @@ const make = Effect.gen(function* () {
     environmentId: EnvironmentId,
   ) {
     const found = yield* probe(url).pipe(Effect.option);
-    return Option.filter(found, (peer) => peer.environmentId === environmentId);
+    return Option.filter(found, ({ peer }) => peer.environmentId === environmentId);
   });
 
   const toLink = Effect.fn("PeerLinks.toLink")(function* (row: PeerLinkRow) {
@@ -468,7 +526,7 @@ const make = Effect.gen(function* () {
               message: `${origin} is this machine, not ${name}.`,
             });
           }
-          const descriptor = yield* probe(origin);
+          const { endpoint, peer: descriptor } = yield* probe(origin);
           if (descriptor.environmentId !== environmentId) {
             return yield* new PeerLinkError({
               reason: "unreachable",
@@ -476,7 +534,7 @@ const make = Effect.gen(function* () {
               answeredAs: descriptor.label,
             });
           }
-          return { origin, descriptor };
+          return { origin, endpoint, descriptor };
         }).pipe(Effect.result),
       { concurrency: "unbounded" },
     );
@@ -497,14 +555,14 @@ const make = Effect.gen(function* () {
     }
     // Each address is kept once, even when two spellings share an origin.
     const origins = [...new Set(matching.map((found) => found.origin))];
-    return { primary: first.origin, peer: first.descriptor, origins };
+    return { primary: first.endpoint, peer: first.descriptor, origins };
   });
 
   /** The peer at `url`, with every address checked for credentials first. */
   const answeringAt = Effect.fn("PeerLinks.answeringAt")(function* (urls: ReadonlyArray<string>) {
     const origins = yield* Effect.forEach(urls, peerOrigin);
-    const primary = origins[0]!;
-    return { primary, peer: yield* probe(primary), origins };
+    const { endpoint, peer } = yield* probe(origins[0]!);
+    return { primary: endpoint, peer, origins };
   });
 
   const linkWith = Effect.fn("PeerLinks.link")(function* (
@@ -537,11 +595,11 @@ const make = Effect.gen(function* () {
     if (
       input.expectedEnvironmentId === undefined &&
       current !== undefined &&
-      !current.urls.includes(primary)
+      !current.urls.includes(origins[0]!)
     ) {
       return yield* new PeerLinkError({
         reason: "pairing_rejected",
-        message: `${primary} answers as ${current.label}, which is already linked at another address. If ${current.label} moved, forget that link first.`,
+        message: `${origins[0]} answers as ${current.label}, which is already linked at another address. If ${current.label} moved, forget that link first.`,
       });
     }
     const self = yield* environment.getDescriptor;
@@ -636,7 +694,7 @@ const make = Effect.gen(function* () {
       ),
     ).pipe(Effect.timeoutOption(LIST_PROBE_TIMEOUT), Effect.orElseSucceed(Option.none));
     if (Option.isNone(answered)) return { ...link, status: "unreachable" };
-    return { ...(yield* withLabel(link, answered.value.label)), status: "reachable" };
+    return { ...(yield* withLabel(link, answered.value.peer.label)), status: "reachable" };
   });
 
   const list: PeerLinks["Service"]["list"] = Effect.gen(function* () {
@@ -678,7 +736,7 @@ const make = Effect.gen(function* () {
           // An address can change hands after linking; only the linked peer may see the token.
           answersAs(url, environmentId).pipe(
             Effect.flatMap(Effect.fromOption),
-            Effect.andThen(clientFor(url)),
+            Effect.flatMap(({ endpoint }) => clientFor(endpoint)),
             Effect.flatMap((client) =>
               client.mcpOAuth
                 .revoke({ payload: { token: Redacted.make(token) } })
@@ -698,6 +756,7 @@ const make = Effect.gen(function* () {
 
   const unlink: PeerLinks["Service"]["unlink"] = Effect.fn("PeerLinks.unlink")(
     function* (environmentId) {
+      const previous = yield* get(environmentId);
       const deleted = yield* sql<{ secret_name: string; urls_json: string }>`
         DELETE FROM peer_environment_links WHERE environment_id = ${environmentId}
         RETURNING secret_name, urls_json
@@ -722,6 +781,15 @@ const make = Effect.gen(function* () {
             new TextDecoder().decode(token.value),
           );
         }
+      }
+      if (Option.isSome(previous)) {
+        yield* Effect.forEach(
+          previous.value.urls.filter((url) => url.startsWith("ssh:")),
+          (url) =>
+            ssh
+              .disconnectEnvironment(sshTarget(url))
+              .pipe(Effect.provide(sshContext), Effect.ignore),
+        );
       }
       return { removed: deleted.length > 0, endedThere };
     },
@@ -759,10 +827,7 @@ const make = Effect.gen(function* () {
           ? Option.none()
           : yield* Effect.raceAll(
               link.urls.map((url) =>
-                answersAs(url, environmentId).pipe(
-                  Effect.flatMap(Effect.fromOption),
-                  Effect.map((peer) => ({ url, peer })),
-                ),
+                answersAs(url, environmentId).pipe(Effect.flatMap(Effect.fromOption)),
               ),
             ).pipe(Effect.option);
       if (Option.isNone(answered)) {
@@ -771,7 +836,8 @@ const make = Effect.gen(function* () {
           message: `${link.label} did not answer at ${link.urls.join(", ")}.`,
         });
       }
-      const { url, peer } = answered.value;
+      // An ssh address answers through a local tunnel, so calls go to its endpoint.
+      const { endpoint, peer } = answered.value;
       // A link made before the peer had to fence linked work, or a peer moved
       // back to such a version, would carry work past those limits.
       if (!linkLimitsHold(peer)) {
@@ -782,7 +848,7 @@ const make = Effect.gen(function* () {
       }
       return {
         link: yield* withLabel(link, peer.label),
-        url,
+        url: endpoint,
         token: new TextDecoder().decode(stored.value),
         capabilities: peer.capabilities,
       };
@@ -828,3 +894,20 @@ const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(PeerLinks, make);
+
+export const layerSsh = Layer.unwrap(
+  Effect.gen(function* () {
+    const environment = yield* ServerEnvironment.ServerEnvironment;
+    const descriptor = yield* environment.getDescriptor;
+    return SshTunnel.SshEnvironmentManager.layer({
+      resolveCliRunner: Effect.succeed({ archiveVersion: descriptor.serverVersion }),
+      stopRemoteOnDisconnect: false,
+    });
+  }),
+).pipe(
+  Layer.provideMerge(NetService.layer),
+  Layer.provideMerge(SshAuth.SshPasswordPrompt.disabledLayer),
+);
+
+/** One shared instance: layers memoize by reference, so every caller must use this value. */
+export const layerWithSsh = layer.pipe(Layer.provide(layerSsh));

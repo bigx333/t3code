@@ -20,8 +20,9 @@ import { ConnectionTransientError } from "./model.ts";
 import { isHostCredentialRefusal } from "./errors.ts";
 import * as ConnectionResolver from "./resolver.ts";
 import {
-  connectionRouteId,
   connectionRoutes,
+  connectionRouteId,
+  credentialConnectionId,
   routeEntry,
   routeHttpBaseUrl,
   routeKeepsItsHost,
@@ -75,6 +76,10 @@ export class ConnectionDriver extends Context.Service<
       entry: ConnectionCatalogEntry,
       route: ConnectionRoute,
     ) => Effect.Effect<RoutePreflight>;
+    readonly mintLanCredential: (input: {
+      readonly httpBaseUrl: string;
+      readonly bearerToken: string;
+    }) => Effect.Effect<string, ConnectionAttemptError>;
     /** Asks the host behind a live session to answer a fresh request on the session's own origin. */
     readonly checkHost: (prepared: PreparedConnection) => Effect.Effect<RouteCheck>;
   }
@@ -94,7 +99,8 @@ export const connectOverRoutes = Effect.fn("ConnectionDriver.connectOverRoutes")
       : yield* Effect.forEach(routes, (route) => Effect.forkChild(checkRoute(route)));
   const headStart = yield* Effect.forkChild(Effect.sleep(ROUTE_CHECK_HEAD_START_MS));
   const attemptScope = yield* Scope.Scope;
-  let transient: ConnectionAttemptError | undefined;
+  const transient = new Map<string, ConnectionAttemptError>();
+  const rejectedCredentials = new Set<string>();
   let blocked: ConnectionAttemptError | undefined;
   const refusedRouteIds: Array<string> = [];
   // Each route gets its own scope so a half-open session closes before the next try.
@@ -106,8 +112,13 @@ export const connectOverRoutes = Effect.fn("ConnectionDriver.connectOverRoutes")
       Effect.result,
     );
     if (result._tag === "Failure") {
-      if (result.failure._tag === "ConnectionTransientError") transient ??= result.failure;
-      else blocked ??= result.failure;
+      const credentialId = credentialConnectionId(connectionRouteId(route.target));
+      if (result.failure._tag === "ConnectionTransientError") {
+        if (!transient.has(credentialId)) transient.set(credentialId, result.failure);
+      } else {
+        blocked ??= result.failure;
+        if (result.failure.reason === "authentication") rejectedCredentials.add(credentialId);
+      }
       if (isHostCredentialRefusal(result.failure))
         refusedRouteIds.push(connectionRouteId(route.target));
     }
@@ -140,13 +151,13 @@ export const connectOverRoutes = Effect.fn("ConnectionDriver.connectOverRoutes")
     // A route still silent after its whole check can hold the attempt open far
     // longer than the check did. Once another route failed in a way that
     // retries, the retry reaches it sooner than waiting here would.
-    if (transient !== undefined && stillSilent.some((entry) => entry.route === route)) break;
+    if (transient.size > 0 && stillSilent.some((entry) => entry.route === route)) break;
     const result = yield* attempt(route);
     if (result._tag === "Success") return { ...result.success, refusedRouteIds };
     if (result.failure.reason === "unsupported") return yield* result.failure;
   }
   return yield* (
-    transient ??
+    [...transient].find(([credentialId]) => !rejectedCredentials.has(credentialId))?.[1] ??
       blocked ??
       new ConnectionTransientError({
         reason: "endpoint-unavailable",
@@ -278,7 +289,12 @@ export const make = Effect.gen(function* () {
       resolver.prepare(routeEntry(entry, route)),
     ).pipe(Effect.withSpan("ConnectionDriver.preflight"));
 
-  return ConnectionDriver.of({ connect, preflight, checkHost });
+  return ConnectionDriver.of({
+    connect,
+    preflight,
+    checkHost,
+    mintLanCredential: remote.mintLanCredential,
+  });
 });
 
 export const layer = Layer.effect(ConnectionDriver, make);

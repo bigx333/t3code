@@ -677,6 +677,7 @@
     "test": "vp test run"
   },
   "dependencies": {
+    "@noble/hashes": "catalog:",
     "@pierre/diffs": "catalog:",
     "@t3tools/contracts": "workspace:*",
     "@t3tools/issue-tracker-linear": "workspace:*",

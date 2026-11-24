@@ -85,6 +85,7 @@ const makePersistenceHarness = Effect.fn("test.makeShellPersistenceHarness")(fun
     connect: Effect.void,
     disconnect: Effect.void,
     retryNow: Effect.void,
+    setDiscoveredRoutes: () => Effect.void,
   });
   const cache = Persistence.EnvironmentCacheStore.of({
     loadShell: () => Effect.succeedNone,
@@ -162,6 +163,7 @@ describe("environment shell synchronization", () => {
         connect: Effect.void,
         disconnect: Effect.void,
         retryNow: Effect.void,
+        setDiscoveredRoutes: () => Effect.void,
       } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
       const cache = Persistence.EnvironmentCacheStore.of({
         loadShell: () => Effect.succeedNone,
@@ -430,6 +432,7 @@ describe("environment shell synchronization", () => {
         connect: Effect.void,
         disconnect: Effect.void,
         retryNow: Effect.void,
+        setDiscoveredRoutes: () => Effect.void,
       } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
       const cache = Persistence.EnvironmentCacheStore.of({
         loadShell: () => Effect.succeedNone,
@@ -573,6 +576,7 @@ describe("environment shell synchronization", () => {
         connect: Effect.void,
         disconnect: Effect.void,
         retryNow: Effect.void,
+        setDiscoveredRoutes: () => Effect.void,
       } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
       const cache = Persistence.EnvironmentCacheStore.of({
         loadShell: () => Effect.succeedNone,
@@ -692,6 +696,7 @@ describe("environment shell synchronization", () => {
         connect: Effect.void,
         disconnect: Effect.void,
         retryNow: Effect.void,
+        setDiscoveredRoutes: () => Effect.void,
       } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
       const cache = Persistence.EnvironmentCacheStore.of({
         loadShell: () => Effect.succeedNone,
@@ -790,6 +795,7 @@ describe("environment shell synchronization", () => {
         connect: Effect.void,
         disconnect: Effect.void,
         retryNow: Effect.void,
+        setDiscoveredRoutes: () => Effect.void,
       } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
       const cache = Persistence.EnvironmentCacheStore.of({
         loadShell: () => Effect.succeedSome(cachedSnapshot),
@@ -856,6 +862,7 @@ describe("environment shell synchronization", () => {
         connect: Effect.void,
         disconnect: Effect.void,
         retryNow: Effect.void,
+        setDiscoveredRoutes: () => Effect.void,
       } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
       const cache = Persistence.EnvironmentCacheStore.of({
         loadShell: () => Effect.succeedNone,
@@ -981,6 +988,7 @@ describe("environment shell synchronization", () => {
         connect: Effect.void,
         disconnect: Effect.void,
         retryNow: Effect.void,
+        setDiscoveredRoutes: () => Effect.void,
       } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
       const cache = Persistence.EnvironmentCacheStore.of({
         loadShell: () =>
@@ -1077,6 +1085,7 @@ describe("environment shell synchronization", () => {
         connect: Effect.void,
         disconnect: Effect.void,
         retryNow: Effect.void,
+        setDiscoveredRoutes: () => Effect.void,
       } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
       const cache = Persistence.EnvironmentCacheStore.of({
         loadShell: () => Effect.succeedNone,
@@ -1229,6 +1238,7 @@ describe("environment shell cold start", () => {
       connect: Effect.void,
       disconnect: Effect.void,
       retryNow: Effect.void,
+      setDiscoveredRoutes: () => Effect.void,
     } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
     const cache = Persistence.EnvironmentCacheStore.of({
       loadShell: () =>

@@ -4232,7 +4232,6 @@
   "ea745611e41bb8b5": "{targetName} verknüpfen",
   "7fc043db70cdbe3f": "Rechner",
   "4474db19bf5700c9": "Andere Adresse…",
-  "5f94f772730a004b": "Verknüpfe einen Rechner, den diese App nicht kennt, über seine https- oder Tailscale-Adresse.",
   "57a631f659db8c6b": "Code einfügen",
   "8b61f3e4b14d099b": "Diesen Link verwenden",
   "b2a0c42daed47c36": "Verknüpfen",
@@ -4241,15 +4240,6 @@
   "a5df4321e1820773": "Agenten hier können dort dann Threads starten, ihnen Nachrichten senden und auf sie warten. Sie erscheint unter „Autorisierte Clients“ in „Freigabe & Zugriff“ dieses Rechners und kann dort widerrufen werden.",
   "9cab5bd6475291cf": "Diese Adresse prüfen",
   "03ce9bea5f88ddbd": "Diese App kann nicht bestätigen, dass es einer deiner Rechner ist. Der eingefügte Kopplungscode wird dorthin gesendet.",
-  "71a4002c45077fe2": [
-    "Diese App hat keine Adresse für ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    ", die ein anderer Rechner erreichen kann. Gib die https- oder Tailscale-Adresse ein."
-  ],
   "c205277bd4ab61d2": [
     "Diese Umgebung ist bereits mit ",
     {
@@ -5643,5 +5633,17 @@
   "42c2e2c16fb65659": "Skill-Bibliothek",
   "1e123a9806667790": "gemeinsame Skills",
   "7ae5a73f951efbee": "Stelle die pstack-Workflows von Lauren Tan bei jedem Anbieter als Skills bereit. Führe {command} einmal aus, um die Modelle auszuwählen.",
-  "9de62c1c16a779f9": "pstack"
+  "9de62c1c16a779f9": "pstack",
+  "3b718923ce25187c": "Öffne für eine LAN-Verbindung unter macOS die Systemeinstellungen > Datenschutz & Sicherheit > Lokales Netzwerk und erlaube den Zugriff für T3 Code (oder deinen Browser). Kehre hierher zurück und versuche es erneut. Du musst nicht neu koppeln.",
+  "6f91bca937b0b79e": "Der gefundene Endpunkt konnte seine Identität nicht nachweisen.",
+  "b423bcd08ac18693": "Verknüpfe einen dieser App unbekannten Rechner über seine HTTPS-, Tailscale- oder SSH-Adresse.",
+  "0450a920ec95b795": [
+    "Diese App hat keine Adresse für ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ", die ein anderer Rechner erreichen kann. Gib die HTTPS-, Tailscale- oder SSH-Adresse ein."
+  ]
 }

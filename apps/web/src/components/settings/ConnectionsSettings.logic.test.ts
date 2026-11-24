@@ -2,6 +2,7 @@ import { type DesktopWslState, EnvironmentId } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   applyWslEnableSelection,
+  formatDesktopSshConnectionError,
   isServerNetworkAccessible,
   parseManualDesktopSshTarget,
   resolveAccessEnvironmentId,
@@ -10,6 +11,19 @@ import {
   selectQrEndpointOption,
   togglePairingScopeSelection,
 } from "./ConnectionsSettings.logic";
+
+describe("formatDesktopSshConnectionError", () => {
+  it("explains the macOS permission check when SSH cannot reach the LAN", () => {
+    expect(
+      formatDesktopSshConnectionError(
+        new Error("ssh: connect to host 192.168.0.164 port 22: No route to host"),
+      ),
+    ).toContain("Privacy & Security > Local Network");
+    expect(formatDesktopSshConnectionError(new Error("Permission denied (publickey)."))).toBe(
+      "Permission denied (publickey).",
+    );
+  });
+});
 
 describe("togglePairingScopeSelection", () => {
   it.each([

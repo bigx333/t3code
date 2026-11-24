@@ -140,6 +140,7 @@ const linkedSupervisor = Effect.gen(function* () {
     connect: Effect.void,
     disconnect: Effect.void,
     retryNow: Effect.void,
+    setDiscoveredRoutes: () => Effect.void,
   });
 });
 
@@ -216,6 +217,7 @@ describe("mobile cloud link environment client", () => {
         connect: Effect.void,
         disconnect: Effect.void,
         retryNow: Effect.void,
+        setDiscoveredRoutes: () => Effect.void,
       });
       const result = yield* updateLinkedEnvironmentLiveActivityPreference(true).pipe(
         Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),

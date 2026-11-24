@@ -11,6 +11,7 @@ import * as DesktopIpc from "./DesktopIpc.ts";
 import { installNotificationBadge } from "./methods/notificationBadge.ts";
 import { getClientSettings, setClientSettings } from "./methods/clientSettings.ts";
 import { getConnectionCatalog, setConnectionCatalog } from "./methods/connectionCatalog.ts";
+import { discoverLanServices } from "./methods/lanDiscovery.ts";
 import {
   getHostEnvironmentId,
   getLocalEnvironmentEnabled,
@@ -135,6 +136,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(acknowledgeSnapShot);
   yield* ipc.handle(setConnectionCatalog);
 
+  yield* ipc.handle(discoverLanServices);
   yield* ipc.handle(discoverSshHosts);
   yield* ipc.handle(resolveSshHost);
   yield* ipc.handle(ensureSshEnvironment);

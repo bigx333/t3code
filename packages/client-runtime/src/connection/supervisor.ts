@@ -36,10 +36,11 @@ import * as ConnectionWakeups from "./wakeups.ts";
 import {
   connectionRouteId,
   connectionRouteKind,
+  routeHttpBaseUrl,
   connectionRoutes,
+  insertRoute,
   type ConnectionRouteKind,
   entryWithRoutes,
-  insertRoute,
   type ReportedEndpoint,
 } from "./routes.ts";
 
@@ -91,7 +92,11 @@ type SupervisorSignal =
   | { readonly _tag: "RetryRequested" }
   | { readonly _tag: "NetworkChanged"; readonly network: NetworkStatus }
   | { readonly _tag: "Wakeup"; readonly reason: ConnectionWakeups.ConnectionWakeup }
-  | { readonly _tag: "BetterRouteAvailable"; readonly routeId: string };
+  | {
+      readonly _tag: "BetterRouteAvailable";
+      readonly routeId: string;
+      readonly discoveryGeneration: number;
+    };
 
 interface PendingRetryTrace {
   readonly previousAttempt: Tracer.Span;
@@ -154,6 +159,7 @@ export interface EnvironmentSupervisorOptions {
   readonly learnRoutes?: (input: {
     readonly activeRoute: ConnectionRoute;
     readonly reported: ReadonlyArray<ReportedEndpoint>;
+    readonly discoveryOrigins: ReadonlyArray<string>;
   }) => Effect.Effect<Option.Option<ConnectionCatalogEntry>>;
 }
 
@@ -271,6 +277,7 @@ export class EnvironmentSupervisor extends Context.Service<
     readonly connect: Effect.Effect<void>;
     readonly disconnect: Effect.Effect<void>;
     readonly retryNow: Effect.Effect<void>;
+    readonly setDiscoveredRoutes: (routes: ReadonlyArray<ConnectionRoute>) => Effect.Effect<void>;
   }
 >()("@t3tools/client-runtime/connection/supervisor/EnvironmentSupervisor") {}
 
@@ -322,10 +329,21 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
   );
   const session = yield* SubscriptionRef.make<Option.Option<RpcSession.RpcSession>>(Option.none());
   const prepared = yield* SubscriptionRef.make<Option.Option<PreparedConnection>>(Option.none());
+  const activeLease = yield* Ref.make(Option.none<ConnectedLease>());
   // Learned routes arrive while a session is live, so the route list is read
   // fresh by each attempt and check instead of being fixed at creation.
   const currentEntry = yield* Ref.make(entry);
-  const currentRoutes = Ref.get(currentEntry).pipe(Effect.map(connectionRoutes));
+  const discovered = yield* Ref.make<ReadonlyArray<ConnectionRoute>>([]);
+  const discoveryGeneration = yield* Ref.make(0);
+  const effectiveEntry = Effect.gen(function* () {
+    const saved = yield* Ref.get(currentEntry);
+    const routes = (yield* Ref.get(discovered)).reduce(
+      (routes, route) => insertRoute(routes, route),
+      connectionRoutes(saved),
+    );
+    return entryWithRoutes(saved, routes);
+  });
+  const currentRoutes = effectiveEntry.pipe(Effect.map(connectionRoutes));
   const preferredRouteId = yield* Ref.make(Option.none<string>());
   const routeCooldowns = yield* Ref.make<ReadonlyMap<string, bigint>>(new Map());
   // Outlives sessions so a reconnect shows a refusal seen earlier; a route leaves once it connects.
@@ -342,7 +360,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
   }));
 
   const attemptEntry = Effect.gen(function* () {
-    const latest = yield* Ref.get(currentEntry);
+    const latest = yield* effectiveEntry;
     const routes = connectionRoutes(latest);
     const preferred = yield* Ref.getAndSet(preferredRouteId, Option.none());
     if (Option.isNone(preferred)) return latest;
@@ -367,7 +385,11 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
       Stream.changesWith((previous, next) => JSON.stringify(previous) === JSON.stringify(next)),
       Stream.runForEach((reported) =>
         Effect.gen(function* () {
-          const updated = yield* learn({ activeRoute, reported });
+          const discoveryOrigins = (yield* Ref.get(discovered)).flatMap((route) => {
+            const url = routeHttpBaseUrl(route);
+            return url === null ? [] : [new URL(url).origin];
+          });
+          const updated = yield* learn({ activeRoute, reported, discoveryOrigins });
           if (Option.isSome(updated)) {
             yield* Ref.set(currentEntry, updated.value);
             yield* requestBetterRouteCheck(lease);
@@ -392,7 +414,8 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     );
 
   const checkBetterRoutes = Effect.fnUntraced(function* (lease: ConnectedLease) {
-    const latest = yield* Ref.get(currentEntry);
+    const latest = yield* effectiveEntry;
+    const generation = yield* Ref.get(discoveryGeneration);
     const current = yield* routeIndex(lease);
     if (current <= 0) return;
     const now = yield* Clock.monotonicTimeNanos;
@@ -420,7 +443,12 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
       return { generation: previous.generation, routes };
     });
     const live = yield* SubscriptionRef.get(session);
-    if (Option.isNone(live) || live.value !== lease.session) return;
+    if (
+      Option.isNone(live) ||
+      live.value !== lease.session ||
+      (yield* Ref.get(discoveryGeneration)) !== generation
+    )
+      return;
     const refused = better
       .filter((_route, position) => results[position] === "refused")
       .map((route) => connectionRouteId(route.target));
@@ -440,6 +468,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     if (index === -1) return;
     yield* signal({
       _tag: "BetterRouteAvailable",
+      discoveryGeneration: generation,
       routeId: connectionRouteId(better[index]!.target),
     });
   });
@@ -453,7 +482,11 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     );
 
   const clearLease = Effect.all(
-    [SubscriptionRef.set(session, Option.none()), SubscriptionRef.set(prepared, Option.none())],
+    [
+      Ref.set(activeLease, Option.none()),
+      SubscriptionRef.set(session, Option.none()),
+      SubscriptionRef.set(prepared, Option.none()),
+    ],
     { discard: true },
   );
 
@@ -682,6 +715,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
       return "end" as const;
     }
     if (next._tag === "BetterRouteAvailable") {
+      if (next.discoveryGeneration !== (yield* Ref.get(discoveryGeneration))) return undefined;
       yield* Ref.set(preferredRouteId, Option.some(next.routeId));
       return "reset" as const;
     }
@@ -1080,6 +1114,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     generation = nextGeneration;
     yield* SubscriptionRef.set(prepared, Option.some(connectedLease.prepared));
     yield* SubscriptionRef.set(session, Option.some(connectedLease.session));
+    yield* Ref.set(activeLease, Option.some(connectedLease));
     if (options?.learnRoutes !== undefined) {
       yield* learnRoutesFrom(options.learnRoutes, connectedLease).pipe(Effect.forkScoped);
     }
@@ -1441,6 +1476,23 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     Effect.withSpan("EnvironmentSupervisor.disconnect"),
   );
 
+  const setDiscoveredRoutes = Effect.fn("EnvironmentSupervisor.setDiscoveredRoutes")(function* (
+    routes: ReadonlyArray<ConnectionRoute>,
+  ) {
+    const previous = yield* Ref.get(discovered);
+    const ids = (items: ReadonlyArray<ConnectionRoute>) =>
+      items.map((route) => connectionRouteId(route.target)).join("\n");
+    if (ids(previous) === ids(routes)) return;
+    yield* Ref.update(discoveryGeneration, (value) => value + 1);
+    yield* Ref.set(discovered, routes);
+    const currentLease = yield* Ref.get(activeLease);
+    if (Option.isSome(currentLease)) {
+      yield* requestBetterRouteCheck(currentLease.value);
+    } else if ((yield* Ref.get(intent)).desired) {
+      yield* signal({ _tag: "RetryRequested" });
+    }
+  });
+
   const retryNow = Ref.set(resetRetryState, true).pipe(
     Effect.andThen(signal({ _tag: "RetryRequested" })),
     Effect.withSpan("EnvironmentSupervisor.retryNow"),
@@ -1454,5 +1506,6 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     connect,
     disconnect,
     retryNow,
+    setDiscoveredRoutes,
   });
 });

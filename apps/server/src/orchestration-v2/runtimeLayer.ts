@@ -325,7 +325,7 @@ const layerWorkflowsProvided = WorkflowRuntime.layer.pipe(
     ).pipe(Layer.provideMerge(layerProjectService)),
   ),
   // Layers memoize by reference, so these are the links Settings and agents use.
-  Layer.provide(PeerMcpClient.layer.pipe(Layer.provideMerge(PeerLinks.layer))),
+  Layer.provide(PeerMcpClient.layer.pipe(Layer.provideMerge(PeerLinks.layerWithSsh))),
 );
 const layerSecretRequestsProvided = SecretRequests.layer.pipe(
   Layer.provide(layerThreadManagementProvided),

@@ -3691,16 +3691,6 @@
   "a5d211c810f56b07": "Ablehnen",
   "481373fbd4042755": "Nur eine Sitzung, die hier den Zugriff verwaltet, kann darauf antworten.",
   "474774458cbb272c": "Adresse",
-  "89a68ae66d9266dc": "Diese App hat keine Adresse für einen Rechner, die ein anderer Rechner erreichen kann. Gib seine HTTPS- oder Tailscale-Adresse ein.",
-  "71a4002c45077fe2": [
-    "Diese App hat keine Adresse für ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    ", die ein anderer Rechner erreichen kann. Gib die https- oder Tailscale-Adresse ein."
-  ],
   "7ebb23e6bf9b19e8": "Kopplungscode",
   "e8235ebb43ad7228": "Erstelle auf einem Rechner einen Link: Einstellungen → Freigabe & Zugriff → Autorisierte Clients → Link erstellen, und füge dann seinen Code hier ein.",
   "a974e6c3c613e452": [
@@ -12806,5 +12796,18 @@
   "a133e14731aa61a0": "Skill-Bibliothek",
   "ccdf81fb39ee7921": "beta gemeinsame skills ordner agents .agents/skills verknüpfen claude codex antigravity cursor opencode ein satz konten",
   "7ae5a73f951efbee": "Stelle die pstack-Workflows von Lauren Tan bei jedem Anbieter als Skills bereit. Führe {command} einmal aus, um die Modelle auszuwählen.",
-  "31ab377f509c09bf": "pstack auf Standard zurücksetzen"
+  "31ab377f509c09bf": "pstack auf Standard zurücksetzen",
+  "3b718923ce25187c": "Öffne für eine LAN-Verbindung unter macOS die Systemeinstellungen > Datenschutz & Sicherheit > Lokales Netzwerk und erlaube den Zugriff für T3 Code (oder deinen Browser). Kehre hierher zurück und versuche es erneut. Du musst nicht neu koppeln.",
+  "6f91bca937b0b79e": "Der gefundene Endpunkt konnte seine Identität nicht nachweisen.",
+  "abc0e5804d7d832a": "Diese App hat keine Adresse für einen Rechner, die ein anderer Rechner erreichen kann. Gib die HTTPS- oder Tailscale-Adresse oder die Adresse im Format ssh://user@host ein.",
+  "5c86fb730057faa7": [
+    "Diese App hat keine Adresse für ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ", die ein anderer Rechner erreichen kann. Gib die HTTPS- oder Tailscale-Adresse oder die Adresse im Format ssh://user@host ein."
+  ],
+  "10aaf6070f636b7e": "Öffne unter macOS „Systemeinstellungen“ > „Datenschutz & Sicherheit“ > „Lokales Netzwerk“, erlaube T3 Code den Zugriff und versuche es erneut. Prüfe auch, ob der Host aktiv und im selben Netzwerk ist."
 }

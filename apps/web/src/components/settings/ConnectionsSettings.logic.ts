@@ -313,7 +313,14 @@ export function formatDesktopSshConnectionError(
     "",
   );
   const withoutTaggedErrorPrefix = withoutIpcPrefix.replace(/^Ssh[A-Za-z]+Error:\s*/u, "");
-  return withoutTaggedErrorPrefix.trim() || fallback;
+  const message = withoutTaggedErrorPrefix.trim() || fallback;
+  return /no route to host|network is unreachable|operation not permitted/iu.test(message)
+    ? `${message} ${resolve(
+        msg(
+          "On macOS, check System Settings > Privacy & Security > Local Network and allow T3 Code, then retry. Also check that the host is awake and on the same network.",
+        ),
+      )}`
+    : message;
 }
 
 export function sortDesktopPairingLinks(links: ReadonlyArray<ServerPairingLinkRecord>) {

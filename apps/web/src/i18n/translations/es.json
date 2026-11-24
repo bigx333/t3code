@@ -3690,16 +3690,6 @@
   "a5d211c810f56b07": "Rechazar",
   "481373fbd4042755": "Solo una sesión que gestione el acceso aquí puede responder a esto.",
   "474774458cbb272c": "Dirección",
-  "89a68ae66d9266dc": "Esta app no tiene una dirección de esta máquina a la que pueda llegar otra máquina. Introduce su dirección https o de Tailscale.",
-  "71a4002c45077fe2": [
-    "Esta app no tiene ninguna dirección de ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " a la que pueda acceder otra máquina. Introduce su dirección https o de Tailscale."
-  ],
   "7ebb23e6bf9b19e8": "Código de emparejamiento",
   "e8235ebb43ad7228": "Crea un enlace en una máquina: Ajustes → Compartir y acceso → Clientes autorizados → Crear enlace, y pega aquí su código.",
   "a974e6c3c613e452": [
@@ -12801,5 +12791,18 @@
   "a133e14731aa61a0": "Biblioteca de skills",
   "ccdf81fb39ee7921": "beta skills compartidas carpeta agents .agents/skills enlazar claude codex antigravity cursor opencode un conjunto cuentas",
   "7ae5a73f951efbee": "Ofrece los flujos de trabajo pstack de Lauren Tan como skills en todos los proveedores. Ejecuta {command} una vez para elegir los modelos.",
-  "31ab377f509c09bf": "Restablecer pstack a su valor predeterminado"
+  "31ab377f509c09bf": "Restablecer pstack a su valor predeterminado",
+  "3b718923ce25187c": "Para conectarte por la red local en macOS, abre Ajustes del Sistema > Privacidad y seguridad > Red local y permite el acceso a T3 Code (o a tu navegador). Vuelve aquí e inténtalo de nuevo; no hace falta volver a emparejar.",
+  "6f91bca937b0b79e": "El punto de conexión detectado no pudo demostrar su identidad.",
+  "abc0e5804d7d832a": "Esta app no tiene ninguna dirección de una máquina a la que pueda acceder otra máquina. Introduce su dirección HTTPS o de Tailscale, o una dirección con el formato ssh://user@host.",
+  "5c86fb730057faa7": [
+    "Esta app no tiene ninguna dirección de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " a la que pueda acceder otra máquina. Introduce su dirección HTTPS o de Tailscale, o una dirección con el formato ssh://user@host."
+  ],
+  "10aaf6070f636b7e": "En macOS, ve a Ajustes del Sistema > Privacidad y seguridad > Red local, permite el acceso a T3 Code y vuelve a intentarlo. Comprueba también que el host no esté en reposo y esté conectado a la misma red."
 }

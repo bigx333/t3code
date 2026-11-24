@@ -4,6 +4,7 @@ import {
   AuthMcpClientAccess,
   AuthOrchestrationOperateScope,
   AuthAdministrativeClientScopes,
+  AuthRelayWriteScope,
   AuthStandardClientScopes,
   type AuthAccessTokenResult,
   type AuthBrowserSessionResult,
@@ -483,6 +484,15 @@ export class ServerAuthMcpApprovalCodeError extends Schema.TaggedError<ServerAut
   }
 }
 
+export class ServerAuthLanCredentialNotAllowedError extends Schema.TaggedError<ServerAuthLanCredentialNotAllowedError>()(
+  "ServerAuthLanCredentialNotAllowedError",
+  {},
+) {
+  override get message(): string {
+    return "Only a paired bearer session can mint a LAN credential.";
+  }
+}
+
 export class ServerAuthForbiddenOperationError extends Schema.TaggedError<ServerAuthForbiddenOperationError>()(
   "ServerAuthForbiddenOperationError",
   {},
@@ -525,6 +535,12 @@ export class EnvironmentAuth extends Context.Service<
       | ServerAuthInvalidRequestError
       | ServerAuthConnectApprovalPendingError
       | ServerAuthInternalError
+    >;
+    readonly issueLanCredential: (
+      request: HttpServerRequest.HttpServerRequest,
+    ) => Effect.Effect<
+      AuthAccessTokenResult,
+      ServerAuthLanCredentialNotAllowedError | ServerAuthCredentialError | ServerAuthInternalError
     >;
     readonly renewAccessToken: (
       accessToken: string,
@@ -1167,6 +1183,61 @@ export const make = Effect.gen(function* () {
       );
     };
 
+  const issueLanCredential: EnvironmentAuth["Service"]["issueLanCredential"] = Effect.fn(
+    "EnvironmentAuth.issueLanCredential",
+  )(function* (request) {
+    const authenticated = yield* authenticateRequest(request);
+    const token = resolveRequestCredential(request)?.token;
+    if (authenticated.method !== "bearer-access-token" || token === undefined) {
+      return yield* new ServerAuthLanCredentialNotAllowedError({});
+    }
+    const parent = yield* sessions.verify(token).pipe(mapSessionVerificationErrors);
+    if (parent.peerLink === true) {
+      return yield* new ServerAuthLanCredentialNotAllowedError({});
+    }
+    const scopes = parent.scopes.filter(
+      (scope) =>
+        scope !== AuthAccessWriteScope &&
+        scope !== AuthRelayWriteScope &&
+        (AuthStandardClientScopes as ReadonlyArray<AuthEnvironmentScope>).includes(scope),
+    );
+    if (scopes.length === 0 || parent.expiresAt === undefined) {
+      return yield* new ServerAuthLanCredentialNotAllowedError({});
+    }
+    const proofKeyThumbprint = yield* verifyRequestDpopProof({ request }).pipe(
+      Effect.provideService(ServerSecretStore.ServerSecretStore, secretStore),
+      Effect.provideService(Digest.Digest, digest),
+    );
+    const now = yield* DateTime.now;
+    const session = yield* sessions
+      .issue({
+        method: "dpop-access-token",
+        subject: SessionStore.lanCredentialSubject(parent.sessionId),
+        scopes,
+        proofKeyThumbprint,
+        ttl: Duration.millis(parent.expiresAt.epochMilliseconds - now.epochMilliseconds),
+        replaceActiveForSubjectAndMethod: true,
+        client: {
+          ...parent.client,
+          label: `${parent.client.label ?? "Client"} (local network)`,
+        },
+        ...(parent.runtimeModeCeiling ? { runtimeModeCeiling: parent.runtimeModeCeiling } : {}),
+      })
+      .pipe(
+        Effect.mapError((cause) => new ServerAuthAuthenticatedAccessTokenIssueError({ cause })),
+      );
+    return {
+      access_token: session.token,
+      issued_token_type: AuthAccessTokenType,
+      token_type: "DPoP",
+      expires_in: Math.max(
+        0,
+        Math.floor((session.expiresAt.epochMilliseconds - now.epochMilliseconds) / 1000),
+      ),
+      scope: encodeOAuthScope(session.scopes),
+    } satisfies AuthAccessTokenResult;
+  });
+
   const toPairingCredential = (issued: IssuedPairingLink): AuthPairingCredentialResult => ({
     id: issued.id,
     credential: issued.credential,
@@ -1717,6 +1788,7 @@ export const make = Effect.gen(function* () {
     getSessionState,
     createBrowserSession,
     exchangeBootstrapCredentialForAccessToken,
+    issueLanCredential,
     renewAccessToken,
     createPairingLink,
     issueConnectCredential,

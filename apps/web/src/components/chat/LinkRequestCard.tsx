@@ -387,12 +387,13 @@ function LinkRequestDialog(props: {
                         {unnamed ? (
                           <T>
                             This app has no address for a machine that another machine can reach.
-                            Enter its https or Tailscale address.
+                            Enter its HTTPS, Tailscale, or ssh://user@host address.
                           </T>
                         ) : (
                           <T>
                             This app has no address for <Var>{target.label}</Var> that another
-                            machine can reach. Enter its https or Tailscale address.
+                            machine can reach. Enter its HTTPS, Tailscale, or ssh://user@host
+                            address.
                           </T>
                         )}
                       </span>

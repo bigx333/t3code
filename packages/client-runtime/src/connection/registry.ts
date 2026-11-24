@@ -16,6 +16,7 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 
 import * as ClientCapabilities from "../platform/capabilities.ts";
 import {
+  BearerConnectionCredential,
   type ConnectionCatalogEntry,
   type ConnectionCredential,
   type ConnectionProfile,
@@ -46,9 +47,14 @@ import {
 } from "./pullRequestRoutingPermissions.ts";
 import {
   RELAY_ROUTE_ID,
+  discoveredRoutes,
   connectionRouteId,
   connectionRoutes,
   credentialConnectionId,
+  isLanDpopRoute,
+  lanCredentialConnectionId,
+  lanCredentialParentId,
+  routeHttpBaseUrl,
   entryWithRoutes,
   findRouteToSameAddress,
   hasSavedBearerRoute,
@@ -59,6 +65,14 @@ import {
 } from "./routes.ts";
 
 const isSshConnectionProfile = Schema.is(SshConnectionProfile);
+
+function httpOrigin(httpBaseUrl: string): string | null {
+  try {
+    return new URL(httpBaseUrl).origin;
+  } catch {
+    return null;
+  }
+}
 
 function unsupportedState(
   entry: ConnectionCatalogEntry,
@@ -160,6 +174,9 @@ export class EnvironmentRegistry extends Context.Service<
       | PlatformEnvironmentRemovalError
     >;
     readonly retryNow: (environmentId: EnvironmentId) => Effect.Effect<void>;
+    readonly setDiscoveredCandidates: (
+      candidates: ReadonlyMap<EnvironmentId, ReadonlyArray<string>>,
+    ) => Effect.Effect<void>;
     readonly setEnabled: (
       environmentId: EnvironmentId,
       enabled: boolean,
@@ -222,6 +239,7 @@ export const make = Effect.gen(function* () {
   const driver = yield* ConnectionDriver.ConnectionDriver;
   const wakeups = yield* ConnectionWakeups.ConnectionWakeups;
   const ssh = yield* ClientCapabilities.SshEnvironmentGateway;
+  const lanDiscovery = yield* ClientCapabilities.LanDiscoverySource;
   const persistedTargets = yield* storage.list;
   const disabledEnvironmentIds = new Set(yield* storage.listDisabled);
   const loadRoute = Effect.fn("EnvironmentRegistry.loadRoute")(function* (
@@ -286,6 +304,10 @@ export const make = Effect.gen(function* () {
   const leaseLocks = yield* Ref.make<ReadonlyMap<EnvironmentId, LeaseLock>>(new Map());
   const leaseLocksGuard = yield* Semaphore.make(1);
   const started = yield* Ref.make(false);
+  const discoveryCandidates = yield* Ref.make<ReadonlyMap<EnvironmentId, ReadonlyArray<string>>>(
+    new Map(),
+  );
+  const discoveryLock = yield* Semaphore.make(1);
 
   const withLeaseLock = <A, E, R>(
     environmentId: EnvironmentId,
@@ -376,6 +398,14 @@ export const make = Effect.gen(function* () {
             Effect.provideService(ConnectionWakeups.ConnectionWakeups, wakeups),
             Scope.provide(scope),
             Effect.onError(() => Scope.close(scope, Exit.void)),
+          );
+          yield* supervisor.setDiscoveredRoutes(
+            discoveredRoutes(
+              entry,
+              allowInsecureRoutes
+                ? ((yield* Ref.get(discoveryCandidates)).get(environmentId) ?? [])
+                : [],
+            ),
           );
           yield* SubscriptionRef.update(serviceScopes, (current) => {
             const next = new Map(current);
@@ -565,6 +595,32 @@ export const make = Effect.gen(function* () {
     }
   });
 
+  const commitLanCredential = Effect.fn("EnvironmentRegistry.commitLanCredential")(
+    function* (input: {
+      readonly environmentId: EnvironmentId;
+      readonly parentId: string;
+      readonly parentToken: string;
+      readonly token: string;
+    }) {
+      yield* withLeaseLock(
+        input.environmentId,
+        Effect.gen(function* () {
+          const current = yield* credentials.get(input.parentId);
+          if (
+            Option.isNone(current) ||
+            current.value._tag !== "BearerConnectionCredential" ||
+            current.value.token !== input.parentToken
+          )
+            return;
+          yield* credentials.put(
+            lanCredentialConnectionId(input.parentId),
+            new BearerConnectionCredential({ token: input.token }),
+          );
+        }),
+      );
+    },
+  );
+
   const register = Effect.fn("EnvironmentRegistry.register")(function* (
     registration: ConnectionRegistration,
     options?: { readonly knownAddressOnly?: boolean },
@@ -572,7 +628,14 @@ export const make = Effect.gen(function* () {
     const registered = connectionRegistrationCatalogEntry(registration);
     const environmentId = registered.target.environmentId;
     const route: ConnectionRoute = { target: registered.target, profile: registered.profile };
-    return yield* withLeaseLock(
+    let remint:
+      | {
+          readonly parentId: string;
+          readonly parentToken: string;
+          readonly httpBaseUrl: string;
+        }
+      | undefined;
+    const accepted = yield* withLeaseLock(
       environmentId,
       Effect.gen(function* () {
         if ((yield* Ref.get(platformEnvironmentIds)).has(environmentId)) {
@@ -597,7 +660,39 @@ export const make = Effect.gen(function* () {
           }
           entry = next.entry;
         }
+        const previousToken = yield* Effect.gen(function* () {
+          if (registration._tag !== "BearerConnectionRegistration") return undefined;
+          const stored = yield* Effect.exit(credentials.get(registration.target.connectionId));
+          if (Exit.isFailure(stored) || Option.isNone(stored.value)) return undefined;
+          const credential = stored.value.value;
+          return credential._tag === "BearerConnectionCredential" ? credential.token : undefined;
+        });
         yield* registrations.register(registration, persistedRoutes(entry));
+        if (
+          registration._tag === "BearerConnectionRegistration" &&
+          previousToken !== undefined &&
+          (registration.credential._tag !== "BearerConnectionCredential" ||
+            previousToken !== registration.credential.token)
+        ) {
+          yield* credentials
+            .remove(lanCredentialConnectionId(registration.target.connectionId))
+            .pipe(Effect.ignore);
+          const parentId = lanCredentialParentId({
+            entry,
+            activeRoute: route,
+            reported: connectionRoutes(entry).flatMap((candidate) => {
+              const httpBaseUrl = routeHttpBaseUrl(candidate);
+              return httpBaseUrl === null ? [] : [{ httpBaseUrl }];
+            }),
+          });
+          if (parentId !== null && registration.credential._tag === "BearerConnectionCredential") {
+            remint = {
+              parentId,
+              parentToken: registration.credential.token,
+              httpBaseUrl: registration.profile.httpBaseUrl,
+            };
+          }
+        }
         yield* Ref.update(persistedEnvironmentIds, (current) =>
           new Set(current).add(environmentId),
         );
@@ -605,6 +700,30 @@ export const make = Effect.gen(function* () {
         return true;
       }),
     );
+    if (remint !== undefined) {
+      const pending = remint;
+      const minted = yield* Effect.exit(
+        driver
+          .mintLanCredential({
+            httpBaseUrl: pending.httpBaseUrl,
+            bearerToken: pending.parentToken,
+          })
+          .pipe(
+            Effect.flatMap((token) =>
+              commitLanCredential({
+                environmentId,
+                parentId: pending.parentId,
+                parentToken: pending.parentToken,
+                token,
+              }),
+            ),
+          ),
+      );
+      if (Exit.isFailure(minted)) {
+        yield* Effect.logDebug("Could not mint a LAN credential.", { cause: minted.cause });
+      }
+    }
+    return accepted;
   });
 
   const replaceRoutesLocked = Effect.fn("EnvironmentRegistry.replaceRoutesLocked")(function* (
@@ -732,6 +851,9 @@ export const make = Effect.gen(function* () {
             registration._tag === "BearerConnectionRegistration" &&
             registration.credential._tag === "BearerConnectionCredential"
           ) {
+            yield* credentials
+              .remove(lanCredentialConnectionId(registration.target.connectionId))
+              .pipe(Effect.ignore);
             const scope = (yield* SubscriptionRef.get(serviceScopes)).get(target.environmentId);
             if (scope !== undefined) {
               const state = yield* SubscriptionRef.get(scope.supervisor.state);
@@ -871,6 +993,7 @@ export const make = Effect.gen(function* () {
     }
     const entry = yield* getEntry(environmentId);
 
+    yield* syncLanCredentials(connectionRoutes(entry), []);
     yield* pullRequestRoutingPermissions.forget(environmentId);
     yield* registrations.remove(environmentId);
     yield* Ref.update(persistedEnvironmentIds, (current) => {
@@ -879,6 +1002,11 @@ export const make = Effect.gen(function* () {
       return next;
     });
     yield* closeServiceScope(environmentId);
+    yield* Ref.update(discoveryCandidates, (current) => {
+      const next = new Map(current);
+      next.delete(environmentId);
+      return next;
+    });
     yield* SubscriptionRef.update(entries, (current) => {
       const next = new Map(current);
       next.delete(environmentId);
@@ -907,6 +1035,37 @@ export const make = Effect.gen(function* () {
     }
   });
 
+  const setDiscoveredCandidates = Effect.fn("EnvironmentRegistry.setDiscoveredCandidates")(
+    (candidates: ReadonlyMap<EnvironmentId, ReadonlyArray<string>>) =>
+      discoveryLock.withPermits(1)(
+        Effect.gen(function* () {
+          const previous = yield* Ref.get(discoveryCandidates);
+          const ids = new Set([...previous.keys(), ...candidates.keys()]);
+          for (const environmentId of ids) {
+            yield* withLeaseLock(
+              environmentId,
+              Effect.gen(function* () {
+                const entry = (yield* SubscriptionRef.get(entries)).get(environmentId);
+                const lease = (yield* SubscriptionRef.get(serviceScopes)).get(environmentId);
+                const urls =
+                  entry === undefined || !entry.enabled || !allowInsecureRoutes
+                    ? []
+                    : (candidates.get(environmentId) ?? []);
+                yield* Ref.update(discoveryCandidates, (current) => {
+                  const next = new Map(current);
+                  if (urls.length) next.set(environmentId, urls);
+                  else next.delete(environmentId);
+                  return next;
+                });
+                if (entry === undefined || lease === undefined) return;
+                yield* lease.supervisor.setDiscoveredRoutes(discoveredRoutes(entry, urls));
+              }),
+            );
+          }
+        }),
+      ),
+  );
+
   const remove = Effect.fn("EnvironmentRegistry.remove")(function* (environmentId: EnvironmentId) {
     return yield* withLeaseLock(environmentId, removeLocked(environmentId));
   });
@@ -926,6 +1085,81 @@ export const make = Effect.gen(function* () {
   const allowInsecureRoutes =
     typeof globalThis.location === "undefined" || globalThis.location.protocol !== "https:";
 
+  const ensureLanCredential = Effect.fnUntraced(
+    function* (input: {
+      readonly environmentId: EnvironmentId;
+      readonly activeRoute: ConnectionRoute;
+      readonly reported: ReadonlyArray<ReportedEndpoint>;
+    }) {
+      const entry = (yield* SubscriptionRef.get(entries)).get(input.environmentId);
+      const httpBaseUrl = routeHttpBaseUrl(input.activeRoute);
+      if (
+        entry === undefined ||
+        httpBaseUrl === null ||
+        !allowInsecureRoutes ||
+        (yield* Ref.get(platformEnvironmentIds)).has(input.environmentId)
+      ) {
+        return false;
+      }
+      const parentId = lanCredentialParentId({ ...input, entry });
+      if (parentId === null) return false;
+      const credentialId = lanCredentialConnectionId(parentId);
+      if (Option.isSome(yield* credentials.get(credentialId))) return true;
+      const parent = yield* credentials.get(parentId);
+      if (Option.isNone(parent) || parent.value._tag !== "BearerConnectionCredential") return false;
+      const parentToken = parent.value.token;
+      const token = yield* driver.mintLanCredential({
+        httpBaseUrl,
+        bearerToken: parentToken,
+      });
+      yield* commitLanCredential({
+        environmentId: input.environmentId,
+        parentId,
+        parentToken,
+        token,
+      });
+      return true;
+    },
+    Effect.catch((error) =>
+      Effect.logDebug("Could not mint a LAN credential.", { error }).pipe(Effect.as(false)),
+    ),
+  );
+
+  const syncLanCredentials = Effect.fnUntraced(function* (
+    before: ReadonlyArray<ConnectionRoute>,
+    after: ReadonlyArray<ConnectionRoute>,
+  ) {
+    const live = new Set(
+      after
+        .filter(isLanDpopRoute)
+        .map((route) => credentialConnectionId(connectionRouteId(route.target))),
+    );
+    const known = new Set<string>();
+    for (const route of [...before, ...after]) {
+      const profile = Option.getOrNull(route.profile);
+      if (profile?._tag !== "BearerConnectionProfile" || profile.authorization === "t3-connect") {
+        continue;
+      }
+      if (isLanDpopRoute(route) || profile.learned !== true) {
+        known.add(credentialConnectionId(connectionRouteId(route.target)));
+      }
+    }
+    yield* Effect.forEach(
+      known,
+      (parentId) =>
+        live.has(parentId)
+          ? Effect.void
+          : credentials
+              .remove(lanCredentialConnectionId(parentId))
+              .pipe(
+                Effect.catch((error) =>
+                  Effect.logWarning("Could not clear a LAN credential.", { error }),
+                ),
+              ),
+      { discard: true },
+    );
+  });
+
   /**
    * Learned routes reuse the active route's credential, so they do not revoke pull request routing
    * trust the way a newly paired address does.
@@ -934,7 +1168,9 @@ export const make = Effect.gen(function* () {
     readonly environmentId: EnvironmentId;
     readonly activeRoute: ConnectionRoute;
     readonly reported: ReadonlyArray<ReportedEndpoint>;
+    readonly discoveryOrigins: ReadonlyArray<string>;
   }) {
+    const lanCredential = yield* ensureLanCredential(input);
     return yield* withLeaseLock(
       input.environmentId,
       Effect.gen(function* () {
@@ -943,12 +1179,39 @@ export const make = Effect.gen(function* () {
         }
         const entry = (yield* SubscriptionRef.get(entries)).get(input.environmentId);
         if (entry === undefined) return Option.none<ConnectionCatalogEntry>();
+        const discoveryOrigins = new Set(input.discoveryOrigins);
+        for (const route of discoveredRoutes(
+          entry,
+          (yield* Ref.get(discoveryCandidates)).get(input.environmentId) ?? [],
+        )) {
+          const profile = Option.getOrNull(route.profile);
+          if (profile?._tag === "BearerConnectionProfile") {
+            const origin = httpOrigin(profile.httpBaseUrl);
+            if (origin !== null) discoveryOrigins.add(origin);
+          }
+        }
+        const activeHttpBaseUrl = routeHttpBaseUrl(input.activeRoute);
+        const activeDiscoveredOrigin =
+          input.activeRoute.discovery === true &&
+          isLanDpopRoute(input.activeRoute) &&
+          activeHttpBaseUrl !== null
+            ? httpOrigin(activeHttpBaseUrl)
+            : null;
+        const beforeRoutes = connectionRoutes(entry);
         const routes = mergeLearnedRoutes({
           entry,
+          lanCredential,
           activeRoute: input.activeRoute,
-          reported: input.reported,
+          reported: input.reported.filter((endpoint) => {
+            const origin = httpOrigin(endpoint.httpBaseUrl);
+            return (
+              origin !== null &&
+              (origin === activeDiscoveredOrigin || !discoveryOrigins.has(origin))
+            );
+          }),
           allowInsecure: allowInsecureRoutes,
         });
+        yield* syncLanCredentials(beforeRoutes, routes ?? beforeRoutes);
         if (routes === null) return Option.none<ConnectionCatalogEntry>();
         const next = entryWithRoutes(entry, routes);
         const previousProfiles = new Map(
@@ -1005,6 +1268,7 @@ export const make = Effect.gen(function* () {
         const remaining = routesAfterRemoving(routes, routeId);
         if (remaining.length === 0) return yield* removeLocked(environmentId);
         yield* replaceRoutesLocked(entry, remaining);
+        yield* syncLanCredentials(routes, remaining);
         const profile = Option.getOrNull(route.profile);
         if (profile !== null && isSshConnectionProfile(profile)) {
           yield* disconnectSsh(environmentId, profile);
@@ -1059,7 +1323,8 @@ export const make = Effect.gen(function* () {
   );
 
   const retryNow = (environmentId: EnvironmentId) =>
-    acquireSupervisor(environmentId).pipe(
+    Effect.forkIn(lanDiscovery.refresh.pipe(Effect.ignoreCause), registryScope).pipe(
+      Effect.andThen(acquireSupervisor(environmentId)),
       Effect.flatMap((supervisor) => supervisor.retryNow),
       Effect.catchTags({ EnvironmentNotRegisteredError: () => Effect.void }),
       Effect.withSpan("EnvironmentRegistry.retryNow"),
@@ -1103,6 +1368,14 @@ export const make = Effect.gen(function* () {
           nextEntries.set(environmentId, next);
           return nextEntries;
         });
+        if (!enabled) {
+          yield* Ref.update(discoveryCandidates, (current) => {
+            const nextCandidates = new Map(current);
+            nextCandidates.delete(environmentId);
+            return nextCandidates;
+          });
+          if (lease !== undefined) yield* lease.supervisor.setDiscoveredRoutes([]);
+        }
         if (lease !== undefined) {
           yield* enabled ? lease.supervisor.connect : lease.supervisor.disconnect;
         } else if (enabled) {
@@ -1206,6 +1479,7 @@ export const make = Effect.gen(function* () {
     reorderRoutes,
     removeRelayEnvironments,
     retryNow,
+    setDiscoveredCandidates,
     setEnabled,
     setCompatibility,
     state,

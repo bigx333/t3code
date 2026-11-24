@@ -3690,16 +3690,6 @@
   "a5d211c810f56b07": "Recusar",
   "481373fbd4042755": "Só uma sessão que gerencia o acesso aqui pode responder a isto.",
   "474774458cbb272c": "Endereço",
-  "89a68ae66d9266dc": "Este app não tem um endereço desta máquina que outra máquina consiga acessar. Digite o endereço https ou do Tailscale dela.",
-  "71a4002c45077fe2": [
-    "Este app não tem um endereço de ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " que outra máquina consiga acessar. Informe o endereço https ou do Tailscale."
-  ],
   "7ebb23e6bf9b19e8": "Código de pareamento",
   "e8235ebb43ad7228": "Crie um link em uma máquina: Configurações → Compartilhamento e acesso → Clientes autorizados → Criar link e cole o código aqui.",
   "a974e6c3c613e452": [
@@ -12806,5 +12796,18 @@
   "a133e14731aa61a0": "Biblioteca de skills",
   "ccdf81fb39ee7921": "beta skills compartilhadas pasta agents .agents/skills vincular claude codex antigravity cursor opencode um conjunto contas",
   "7ae5a73f951efbee": "Disponibilize os fluxos de trabalho pstack de Lauren Tan como skills em todos os provedores. Execute {command} uma vez para escolher os modelos.",
-  "31ab377f509c09bf": "Restaurar o padrão do pstack"
+  "31ab377f509c09bf": "Restaurar o padrão do pstack",
+  "3b718923ce25187c": "Para se conectar pela rede local no macOS, abra Ajustes do Sistema > Privacidade e Segurança > Rede Local e permita o acesso ao T3 Code (ou ao seu navegador). Volte aqui e tente novamente; não é necessário emparelhar de novo.",
+  "6f91bca937b0b79e": "O ponto de conexão detectado não conseguiu comprovar sua identidade.",
+  "abc0e5804d7d832a": "Este app não tem um endereço de uma máquina que outra máquina consiga acessar. Informe o endereço HTTPS, do Tailscale ou no formato ssh://user@host.",
+  "5c86fb730057faa7": [
+    "Este app não tem um endereço de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " que outra máquina consiga acessar. Informe o endereço HTTPS, do Tailscale ou no formato ssh://user@host."
+  ],
+  "10aaf6070f636b7e": "No macOS, abra Ajustes do Sistema > Privacidade e Segurança > Rede Local, permita o acesso do T3 Code e tente novamente. Verifique também se o host está ativo e na mesma rede."
 }

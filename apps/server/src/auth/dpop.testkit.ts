@@ -17,7 +17,7 @@ export const makeDpopKey = () => {
     sign: (input: {
       readonly method: string;
       readonly url: string;
-      readonly token: string;
+      readonly token?: string;
       readonly iat: number;
     }) => {
       const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
@@ -27,7 +27,7 @@ export const makeDpopKey = () => {
         htu: input.url,
         jti: `proof-${++proofCount}`,
         iat: input.iat,
-        ath: computeDpopAccessTokenHash(input.token),
+        ...(input.token ? { ath: computeDpopAccessTokenHash(input.token) } : {}),
       });
       const signature = NodeCrypto.sign("sha256", Buffer.from(`${header}.${payload}`), {
         key: privateKey,

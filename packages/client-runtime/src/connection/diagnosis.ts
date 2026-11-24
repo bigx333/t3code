@@ -439,7 +439,21 @@ export function presentConnectionDiagnosis(
   return {
     headline: headline(host, located, failure, resolve),
     hops,
-    steps: steps(host, located, failure, resolve),
+    steps: [
+      ...steps(host, located, failure, resolve),
+      ...(!relayPath &&
+      (failure?.reason === "network" ||
+        failure?.reason === "transport" ||
+        failure?.reason === "timeout")
+        ? [
+            resolve(
+              msg(
+                "For a LAN connection on macOS, open System Settings > Privacy & Security > Local Network and allow T3 Code (or your browser). Return here and retry; you do not need to pair again.",
+              ),
+            ),
+          ]
+        : []),
+    ],
     facts,
     moreInfoUrl:
       relayPath || located.cause === "session_pending"

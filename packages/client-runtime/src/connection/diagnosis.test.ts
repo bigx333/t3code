@@ -54,6 +54,27 @@ const results = (state: SupervisorConnectionState, via?: "relay" | "direct") =>
   diagnose(state, via)?.hops.map((hop) => `${hop.hop}:${hop.result}`);
 
 describe("presentConnectionDiagnosis", () => {
+  it("suggests local network consent for direct network failures without blaming authentication", () => {
+    const failure = mapRemoteEnvironmentError(
+      new RemoteEnvironmentAuthFetchError({ message: "Failed to fetch", cause: new TypeError() }),
+      "direct",
+    );
+    expect(diagnose(backoff(failure), "direct")?.steps.join(" ")).toContain("Local Network");
+    const relayFailure = mapRemoteEnvironmentError(
+      new RemoteEnvironmentAuthFetchError({ message: "Failed to fetch", cause: new TypeError() }),
+      "relay",
+    );
+    expect(diagnose(backoff(relayFailure), "relay")?.steps.join(" ")).not.toContain(
+      "Local Network",
+    );
+    const denied = new ConnectionBlockedError({
+      reason: "authentication",
+      detail: "Invalid credential",
+    });
+    expect(diagnose(backoff(denied), "direct")?.steps.join(" ")).not.toContain("Local Network");
+    expect(diagnose({ ...AVAILABLE_CONNECTION_STATE, phase: "connected" }, "direct")).toBeNull();
+  });
+
   it("tells a working tunnel apart from T3 Code not answering", () => {
     expect(diagnose(backoff(unavailable("origin_unreachable")))?.headline).toBe(
       "Tunnel works, but T3 Code on Mac mini did not answer",

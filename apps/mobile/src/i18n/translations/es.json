@@ -4227,7 +4227,6 @@
   "ea745611e41bb8b5": "Vincular {targetName}",
   "7fc043db70cdbe3f": "Máquina",
   "4474db19bf5700c9": "Otra dirección…",
-  "5f94f772730a004b": "Vincula una máquina que esta app no conoce mediante su dirección https o de Tailscale.",
   "57a631f659db8c6b": "Pega el código",
   "8b61f3e4b14d099b": "Usar este vínculo",
   "b2a0c42daed47c36": "Vincular",
@@ -4236,15 +4235,6 @@
   "a5df4321e1820773": "Así los agentes de aquí podrán iniciar hilos allí, enviarles mensajes y esperarlos. Aparece en Clientes autorizados, en Compartir y acceso de esa máquina, donde se puede revocar.",
   "9cab5bd6475291cf": "Comprobar esta dirección",
   "03ce9bea5f88ddbd": "Esta app no puede confirmar que sea una de tus máquinas. El código de emparejamiento que pegues se envía allí.",
-  "71a4002c45077fe2": [
-    "Esta app no tiene ninguna dirección de ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " a la que pueda acceder otra máquina. Introduce su dirección https o de Tailscale."
-  ],
   "c205277bd4ab61d2": [
     "Este entorno ya está vinculado a ",
     {
@@ -5637,5 +5627,17 @@
   "42c2e2c16fb65659": "biblioteca de habilidades",
   "1e123a9806667790": "habilidades compartidas",
   "7ae5a73f951efbee": "Ofrece los flujos de trabajo pstack de Lauren Tan como skills en todos los proveedores. Ejecuta {command} una vez para elegir los modelos.",
-  "9de62c1c16a779f9": "pstack"
+  "9de62c1c16a779f9": "pstack",
+  "3b718923ce25187c": "Para conectarte por la red local en macOS, abre Ajustes del Sistema > Privacidad y seguridad > Red local y permite el acceso a T3 Code (o a tu navegador). Vuelve aquí e inténtalo de nuevo; no hace falta volver a emparejar.",
+  "6f91bca937b0b79e": "El punto de conexión detectado no pudo demostrar su identidad.",
+  "b423bcd08ac18693": "Vincula una máquina que esta app aún no conoce mediante su dirección HTTPS, Tailscale o SSH.",
+  "0450a920ec95b795": [
+    "Esta app no tiene una dirección de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " a la que pueda acceder otra máquina. Introduce su dirección HTTPS, Tailscale o SSH."
+  ]
 }

@@ -16,6 +16,12 @@ execution model.
   to loopback when a shareable endpoint is unavailable (loopback names the client's own machine).
   Verify a direct or learned route answers as the expected environment before sending credentials,
   and never let a token paired over HTTPS downgrade to plain HTTP.
+- **LAN routes get their own credential.** A device paired over HTTPS or Tailscale reaches a learned
+  LAN address with a separate DPoP-bound
+  [LAN credential](../../apps/server/src/auth/EnvironmentAuth.ts) that cannot outlive or outrank its
+  paired session. The server also reports its [mDNS `.local` name](../../apps/server/src/environment/mdnsHost.ts)
+  as a LAN endpoint, since an IPv4 address does not survive a subnet change; a LAN credential route
+  cannot use the name because its proof binds the socket's IPv4 address.
 - Pull request routing trust covers the saved route set: adding or changing a route revokes trust;
   reordering does not.
 

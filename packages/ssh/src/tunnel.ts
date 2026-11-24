@@ -72,6 +72,7 @@ const SSH_TUNNEL_FORWARD_PROBE_INTERVAL_MS = 100;
 const REMOTE_ARCHIVE_CHECKSUMS_SECONDS = 30;
 const REMOTE_ARCHIVE_DOWNLOAD_SECONDS = 240;
 const REMOTE_ARCHIVE_LOCK_WAIT_SECONDS = 360;
+const REMOTE_INSTALLED_PROBE_SECONDS = 15;
 const REMOTE_ARCHIVE_LAUNCH_TIMEOUT_MS = 900_000;
 const REMOTE_REUSE_READY_TIMEOUT_MS = 2_000;
 const REMOTE_PID_EXIT_WAIT_MS = 2_000;
@@ -116,6 +117,8 @@ export interface RemoteT3RunnerOptions {
 
 export interface SshEnvironmentManagerOptions {
   readonly resolveCliRunner?: Effect.Effect<RemoteT3RunnerOptions>;
+  /** Peer links own their tunnel, not the remote server or its active jobs. */
+  readonly stopRemoteOnDisconnect?: boolean;
   // Identifies this install to the remote across edits of a connection; null when unknown.
   readonly resolveLauncherId?: Effect.Effect<string | null>;
 }
@@ -485,12 +488,6 @@ if [ -z "$T3_ARCHIVE_VERSION" ]; then
   printf 'No t3 release version was provided for the remote runtime.\\n' >&2
   exit 1
 fi
-T3_SYSTEM_EXECUTABLE="$(command -v t3 2>/dev/null || true)"
-if [ -n "$T3_SYSTEM_EXECUTABLE" ] && T3_SYSTEM_VERSION="$("$T3_SYSTEM_EXECUTABLE" --version 2>/dev/null)" && [ "$T3_SYSTEM_VERSION" = "t3 v$T3_ARCHIVE_VERSION" ]; then
-  # A matching host-provided runtime supports platforms such as musl Linux,
-  # where the portable release archive cannot run.
-  exec "$T3_SYSTEM_EXECUTABLE" "$@"
-fi
 # Self-contained release archive: no Node, npm, or compiler on the remote.
 # Unpacked into the pinned-runtime layout so \`t3 service install\` reuses it.
 T3_RELEASE_BASE_URL=@@T3_RELEASE_BASE_URL@@
@@ -498,6 +495,41 @@ T3_RUNTIME_DIR="$HOME/.t3/runtime/versions/$T3_ARCHIVE_VERSION"
 t3_runtime_ready() {
   [ -x "$T3_RUNTIME_DIR/t3" ] && [ "$(cat "$T3_RUNTIME_DIR/.install-complete" 2>/dev/null)" = "$T3_ARCHIVE_VERSION" ]
 }
+# Bound each probe so a hung candidate falls through to the archive download
+# instead of stalling until the SSH timeout. Output goes through a file and the
+# watchdog is detached: orphaned children holding a pipe would block the capture.
+t3_probe() {
+  T3_PROBE_OUT="$(mktemp "\${TMPDIR:-/tmp}/t3-probe.XXXXXX")"
+  "$@" >"$T3_PROBE_OUT" 2>/dev/null </dev/null &
+  T3_PROBE_PID=$!
+  (
+    sleep @@T3_INSTALLED_PROBE_SECONDS@@
+    kill "$T3_PROBE_PID" 2>/dev/null
+    sleep 2
+    kill -KILL "$T3_PROBE_PID" 2>/dev/null
+  ) >/dev/null 2>&1 &
+  T3_PROBE_DOG=$!
+  T3_PROBE_RC=0
+  wait "$T3_PROBE_PID" 2>/dev/null || T3_PROBE_RC=$?
+  kill "$T3_PROBE_DOG" 2>/dev/null || true
+  wait "$T3_PROBE_DOG" 2>/dev/null || true
+  cat "$T3_PROBE_OUT"
+  rm -f "$T3_PROBE_OUT"
+  return "$T3_PROBE_RC"
+}
+# Reuse only an exact-release CLI from the shell or the standard install locations.
+T3_SYSTEM_EXECUTABLE="$(command -v t3 2>/dev/null || true)"
+for T3_INSTALLED in "$T3_SYSTEM_EXECUTABLE" "$HOME/.local/bin/t3" "$HOME/.t3/bin/t3"; do
+  if [ "$T3_INSTALLED" != "$T3_SYSTEM_EXECUTABLE" ] && t3_runtime_ready; then
+    break
+  fi
+  [ -f "$T3_INSTALLED" ] && [ -x "$T3_INSTALLED" ] || continue
+  if T3_INSTALLED_VERSION="$(t3_probe "$T3_INSTALLED" --version 2>/dev/null)" &&
+    [ "$T3_INSTALLED_VERSION" = "t3 v$T3_ARCHIVE_VERSION" ] &&
+    t3_probe "$T3_INSTALLED" __ssh-helper --help >/dev/null 2>&1; then
+    exec "$T3_INSTALLED" "$@"
+  fi
+done
 if ! t3_runtime_ready; then
   mkdir -p "$HOME/.t3/runtime/versions"
   T3_LOCK="$HOME/.t3/runtime/versions/.$T3_ARCHIVE_VERSION.install.lock"
@@ -1002,6 +1034,31 @@ while [ -z "$REMOTE_PORT" ] && ! managed_server_running "$(cat "$PID_FILE" 2>/de
   OWNER_WAITED=$((OWNER_WAITED + 1))
 done
 if [ -z "$REMOTE_PORT" ]; then
+  # The service owns its saved access settings and restart lifecycle.
+  SERVICE_INSTALLED=0
+  case "$(uname -s)" in
+    Darwin)
+      if [ -f "$HOME/Library/LaunchAgents/com.t3tools.t3code.service.plist" ]; then
+        SERVICE_INSTALLED=1
+      fi
+      ;;
+    Linux)
+      SERVICE_UNIT="systemd/user/t3code.service"
+      SERVICE_CONFIG_HOME="$HOME/.config"
+      case "\${XDG_CONFIG_HOME:-}" in
+        /*) SERVICE_CONFIG_HOME="$XDG_CONFIG_HOME" ;;
+      esac
+      # The SSH login may have a different XDG home and no connection to the user manager.
+      if [ -f "$SERVICE_CONFIG_HOME/$SERVICE_UNIT" ] || [ -f "$HOME/.config/$SERVICE_UNIT" ] ||
+        { command -v systemctl >/dev/null 2>&1 && systemctl --user cat t3code.service >/dev/null 2>&1; }; then
+        SERVICE_INSTALLED=1
+      fi
+      ;;
+  esac
+  if [ "$SERVICE_INSTALLED" = 1 ]; then
+    printf 'The T3 Code background service is installed but not ready. Run t3 service restart on this host; SSH will not replace it with a standalone server.\\n' >&2
+    exit 1
+  fi
   REMOTE_PORT="$(pick_port)" || true
   if [ -z "$REMOTE_PORT" ]; then
     if [ "$T3_ARCHIVE_MODE" = "1" ]; then
@@ -1149,6 +1206,7 @@ export function buildRemoteT3RunnerScript(input?: RemoteT3RunnerOptions): string
       T3_ARCHIVE_VERSION: shellSingleQuote(archiveVersion),
       T3_RELEASE_BASE_URL: shellSingleQuote(releaseBaseUrl),
       T3_ARCHIVE_LOCK_WAIT_SECONDS: String(REMOTE_ARCHIVE_LOCK_WAIT_SECONDS),
+      T3_INSTALLED_PROBE_SECONDS: String(REMOTE_INSTALLED_PROBE_SECONDS),
       T3_ARCHIVE_DOWNLOAD_SECONDS: String(REMOTE_ARCHIVE_DOWNLOAD_SECONDS),
       T3_ARCHIVE_CHECKSUMS_SECONDS: String(REMOTE_ARCHIVE_CHECKSUMS_SECONDS),
       T3_NODE_ENV_SCRIPT: buildRemoteNodeEnvScript(input),
@@ -1547,7 +1605,7 @@ const startSshTunnel = Effect.fn("ssh/tunnel.startSshTunnel")(function* (input: 
     "-n",
     "-N",
     "-L",
-    `${input.localPort}:127.0.0.1:${input.remotePort}`,
+    `127.0.0.1:${input.localPort}:127.0.0.1:${input.remotePort}`,
     "--",
     hostSpec,
   ];
@@ -2025,7 +2083,7 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
             forceKillAfter: TUNNEL_SHUTDOWN_TIMEOUT_MS,
           })
           .pipe(Effect.ignore);
-        if (!stopRemote) {
+        if (!stopRemote || options.stopRemoteOnDisconnect === false) {
           return;
         }
         yield* Effect.logDebug("ssh.environment.tunnel.finalizer.start", {
@@ -2089,11 +2147,19 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
         answered = true;
       });
       const client = yield* HttpClient.HttpClient;
+      // Only our live SSH process can establish ownership of the forwarded port.
+      const readinessProbe = entry.process.isRunning.pipe(
+        Effect.flatMap((running) =>
+          running
+            ? waitForHttpReady({
+                baseUrl: entry.httpBaseUrl,
+                timeoutMs: SSH_TUNNEL_READY_PROBE_TIMEOUT_MS,
+              })
+            : Effect.fail(new SshReadinessError({ message: "SSH tunnel process exited." })),
+        ),
+      );
       const readinessExit = yield* Effect.exit(
-        waitForHttpReady({
-          baseUrl: entry.httpBaseUrl,
-          timeoutMs: SSH_TUNNEL_READY_PROBE_TIMEOUT_MS,
-        }).pipe(
+        readinessProbe.pipe(
           Effect.provideService(
             HttpClient.HttpClient,
             client.pipe(
@@ -2252,11 +2318,13 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
             yield* closeTunnelEntry(entry);
           }).pipe(Effect.uninterruptible);
         }
-        yield* runWithSshAuth({
-          key,
-          target: resolvedTarget,
-          operation: (authOptions) => stopRemoteServer(resolvedTarget, authOptions),
-        });
+        if (options.stopRemoteOnDisconnect !== false) {
+          yield* runWithSshAuth({
+            key,
+            target: resolvedTarget,
+            operation: (authOptions) => stopRemoteServer(resolvedTarget, authOptions),
+          });
+        }
         yield* Effect.logInfo("ssh.environment.disconnect.succeeded", {
           ...sshTargetLogFields(resolvedTarget),
           key,

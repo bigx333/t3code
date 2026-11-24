@@ -1,9 +1,9 @@
+import { EnvironmentAuthInvalidError } from "@t3tools/contracts";
 import {
   RelayAuthInvalidError,
   RelayEnvironmentConnectNotAuthorizedError,
   RelayEnvironmentEndpointTimedOutError,
 } from "@t3tools/contracts/relay";
-import { EnvironmentAuthInvalidError } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 
 import {
@@ -110,6 +110,22 @@ describe("mapRemoteDpopEnvironmentError", () => {
     });
   });
 
+  it("names a direct LAN failure without the tunnel hint", () => {
+    const error = new RemoteEnvironmentAuthFetchError({
+      message: "Failed to fetch remote environment endpoint.",
+      cause: new TypeError("Failed to fetch"),
+    });
+    expect(mapRemoteDpopEnvironmentError(error, "direct")).toMatchObject({
+      _tag: "ConnectionTransientError",
+      hop: "server",
+      via: "direct",
+      detail: error.message,
+    });
+    expect(mapRemoteDpopEnvironmentError(error, "direct").message).not.toContain(
+      NETWORK_BLOCKING_HINT,
+    );
+  });
+
   it("keeps a direct host's clock refusal apart from a refused pairing", () => {
     const mapped = mapRemoteDpopEnvironmentError(
       new EnvironmentAuthInvalidError({
@@ -120,7 +136,11 @@ describe("mapRemoteDpopEnvironmentError", () => {
       }),
       "direct",
     );
-    expect(mapped).toMatchObject({ via: "direct", failureCause: "clock_skew" });
+    expect(mapped).toMatchObject({
+      via: "direct",
+      failureCause: "clock_skew",
+      dpopFailureReason: "time_window",
+    });
     expect(isHostCredentialRefusal(mapped)).toBe(false);
   });
 });

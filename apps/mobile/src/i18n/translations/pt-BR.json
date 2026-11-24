@@ -4227,7 +4227,6 @@
   "ea745611e41bb8b5": "Vincular {targetName}",
   "7fc043db70cdbe3f": "Máquina",
   "4474db19bf5700c9": "Outro endereço…",
-  "5f94f772730a004b": "Vincule uma máquina que este app não conhece pelo endereço https ou Tailscale dela.",
   "57a631f659db8c6b": "Cole o código",
   "8b61f3e4b14d099b": "Usar este vínculo",
   "b2a0c42daed47c36": "Vincular",
@@ -4236,15 +4235,6 @@
   "a5df4321e1820773": "Os agentes daqui poderão então iniciar threads lá, enviar mensagens e aguardá-las. Ele aparece em Clientes autorizados em Compartilhamento e acesso daquela máquina, onde pode ser revogado.",
   "9cab5bd6475291cf": "Verifique este endereço",
   "03ce9bea5f88ddbd": "Este app não pode confirmar que esta é uma das suas máquinas. O código de pareamento que você colar será enviado para lá.",
-  "71a4002c45077fe2": [
-    "Este app não tem um endereço de ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " que outra máquina consiga acessar. Informe o endereço https ou do Tailscale."
-  ],
   "c205277bd4ab61d2": [
     "Este ambiente já está vinculado a ",
     {
@@ -5637,5 +5627,17 @@
   "42c2e2c16fb65659": "biblioteca de habilidades",
   "1e123a9806667790": "habilidades compartilhadas",
   "7ae5a73f951efbee": "Disponibilize os fluxos de trabalho pstack de Lauren Tan como skills em todos os provedores. Execute {command} uma vez para escolher os modelos.",
-  "9de62c1c16a779f9": "pstack"
+  "9de62c1c16a779f9": "pstack",
+  "3b718923ce25187c": "Para se conectar pela rede local no macOS, abra Ajustes do Sistema > Privacidade e Segurança > Rede Local e permita o acesso ao T3 Code (ou ao seu navegador). Volte aqui e tente novamente; não é necessário emparelhar de novo.",
+  "6f91bca937b0b79e": "O ponto de conexão detectado não conseguiu comprovar sua identidade.",
+  "b423bcd08ac18693": "Vincule uma máquina que este app ainda não conhece usando seu endereço HTTPS, Tailscale ou SSH.",
+  "0450a920ec95b795": [
+    "Este app não tem um endereço de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " que outra máquina possa acessar. Informe o endereço HTTPS, Tailscale ou SSH."
+  ]
 }

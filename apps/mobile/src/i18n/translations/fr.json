@@ -4227,7 +4227,6 @@
   "ea745611e41bb8b5": "Associer {targetName}",
   "7fc043db70cdbe3f": "Machine",
   "4474db19bf5700c9": "Autre adresse…",
-  "5f94f772730a004b": "Associez une machine que cette app ne connaît pas, par son adresse https ou Tailscale.",
   "57a631f659db8c6b": "Collez le code",
   "8b61f3e4b14d099b": "Utiliser ce lien",
   "b2a0c42daed47c36": "Associer",
@@ -4236,15 +4235,6 @@
   "a5df4321e1820773": "Les agents d’ici pourront alors lancer des fils là-bas, leur envoyer des messages et les attendre. L’association apparaît sous Clients autorisés dans Partage et accès de cette machine, où elle peut être révoquée.",
   "9cab5bd6475291cf": "Vérifier cette adresse",
   "03ce9bea5f88ddbd": "Cette app ne peut pas confirmer qu’il s’agit de l’une de vos machines. Le code d’appairage que vous collez y est envoyé.",
-  "71a4002c45077fe2": [
-    "Cette app n’a pour ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " aucune adresse joignable par une autre machine. Saisissez son adresse https ou Tailscale."
-  ],
   "c205277bd4ab61d2": [
     "Cet environnement est déjà associé à ",
     {
@@ -5637,5 +5627,17 @@
   "42c2e2c16fb65659": "bibliothèque de compétences",
   "1e123a9806667790": "compétences partagées",
   "7ae5a73f951efbee": "Rendez les workflows pstack de Lauren Tan disponibles sous forme de skills chez tous les fournisseurs. Exécutez {command} une fois pour choisir les modèles.",
-  "9de62c1c16a779f9": "pstack"
+  "9de62c1c16a779f9": "pstack",
+  "3b718923ce25187c": "Pour établir une connexion au réseau local sous macOS, ouvrez Réglages Système > Confidentialité et sécurité > Réseau local et autorisez T3 Code (ou votre navigateur). Revenez ici et réessayez ; il n’est pas nécessaire de refaire l’association.",
+  "6f91bca937b0b79e": "Le point de connexion découvert n’a pas pu prouver son identité.",
+  "b423bcd08ac18693": "Associez une machine que cette application ne connaît pas encore à l’aide de son adresse HTTPS, Tailscale ou SSH.",
+  "0450a920ec95b795": [
+    "Cette application ne dispose d’aucune adresse pour ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " qui soit accessible depuis une autre machine. Saisissez son adresse HTTPS, Tailscale ou SSH."
+  ]
 }

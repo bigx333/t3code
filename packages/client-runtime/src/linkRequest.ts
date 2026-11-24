@@ -10,8 +10,8 @@ import {
   resolveEnvironmentMachineKind,
   type ServerConfig,
 } from "@t3tools/contracts";
-import { isLocalLoopbackHost } from "@t3tools/shared/hostClassification";
 import * as Option from "effect/Option";
+import { isLocalLoopbackHost, isTailnetHost } from "@t3tools/shared/hostClassification";
 
 import type { EnvironmentPresentation } from "./connection/presentation.ts";
 import { connectionRoutes, routeHttpBaseUrl } from "./connection/routes.ts";
@@ -95,11 +95,17 @@ export interface LinkableMachine {
   readonly urls: ReadonlyArray<string>;
 }
 
-/** A loopback address names whichever machine opens it: the linking server, not this one. */
-const isLoopbackUrl = (url: string) => {
-  const hostname = parsedUrl(url)?.hostname;
-  return hostname !== undefined && isLocalLoopbackHost(hostname);
-};
+export const linkableMachineUrls = (addresses: ReadonlyArray<string>): ReadonlyArray<string> =>
+  [...new Set(addresses)].filter((address) => {
+    const url = URL.parse(address);
+    return (
+      url !== null &&
+      !isLocalLoopbackHost(url.hostname) &&
+      (url.protocol === "https:" ||
+        url.protocol === "ssh:" ||
+        (url.protocol === "http:" && isTailnetHost(url.hostname)))
+    );
+  });
 
 /**
  * The catalog's machines other than the thread's own, in catalog order, then those only T3
@@ -137,13 +143,11 @@ export function linkableMachines(input: {
         connected: environment.connection.phase === "connected",
         connectOnly: false,
         linked: linkedIds.has(environment.environmentId),
-        urls: [
-          ...new Set([
-            ...reported,
-            ...routes,
-            ...(connect === undefined ? [] : [connect.httpBaseUrl]),
-          ]),
-        ].filter((url) => !isLoopbackUrl(url)),
+        urls: linkableMachineUrls([
+          ...reported,
+          ...routes,
+          ...(connect === undefined ? [] : [connect.httpBaseUrl]),
+        ]),
       };
     });
   const savedIds = new Set<string>(saved.map((machine) => machine.environmentId));
@@ -164,7 +168,7 @@ export function linkableMachines(input: {
         connected: false,
         connectOnly: true,
         linked: linkedIds.has(environment.environmentId),
-        urls: [environment.endpoint.httpBaseUrl].filter((url) => !isLoopbackUrl(url)),
+        urls: linkableMachineUrls([environment.endpoint.httpBaseUrl]),
       };
     });
   return [...saved, ...connectOnly];

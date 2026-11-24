@@ -1,5 +1,6 @@
 import {
   EnvironmentId,
+  AuthProvidersManageScope,
   ProviderDriverKind,
   ServerSelfUpdateError,
   ProviderInstanceId,
@@ -46,6 +47,7 @@ import {
 import * as EnvironmentRegistry from "../connection/registry.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import { RpcPermissionGuard } from "../rpc/client.ts";
+import * as RpcHttp from "../rpc/http.ts";
 import * as Persistence from "../platform/persistence.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import type { RpcSession } from "../rpc/session.ts";
@@ -337,6 +339,7 @@ describe("accepted server update recovery", () => {
         connect: Effect.void,
         disconnect: Effect.void,
         retryNow: Effect.void,
+        setDiscoveredRoutes: () => Effect.void,
       });
       const run: EnvironmentRegistry.EnvironmentRegistry["Service"]["run"] = (_id, effect) =>
         Effect.provideService(effect, EnvironmentSupervisor.EnvironmentSupervisor, supervisor);
@@ -445,6 +448,7 @@ const makeConfigPersistenceHarness = Effect.fn("test.makeConfigPersistenceHarnes
     connect: Effect.void,
     disconnect: Effect.void,
     retryNow: Effect.void,
+    setDiscoveredRoutes: () => Effect.void,
   });
   const cache = Persistence.EnvironmentCacheStore.of({
     loadShell: () => Effect.succeedNone,
@@ -1040,6 +1044,7 @@ describe("server state projection", () => {
         connect: Effect.void,
         disconnect: Effect.void,
         retryNow: Effect.void,
+        setDiscoveredRoutes: () => Effect.void,
       } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
       const staleWelcome = {
         environment: {} as ServerLifecycleWelcomePayload["environment"],
@@ -1095,6 +1100,7 @@ describe("server state projection", () => {
         connect: Effect.void,
         disconnect: Effect.void,
         retryNow: Effect.void,
+        setDiscoveredRoutes: () => Effect.void,
       } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
 
       yield* Effect.scoped(
@@ -1153,6 +1159,7 @@ describe("server state projection", () => {
         connect: Effect.void,
         disconnect: Effect.void,
         retryNow: Effect.void,
+        setDiscoveredRoutes: () => Effect.void,
       } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
       const firstWelcome = {
         environment: {} as ServerLifecycleWelcomePayload["environment"],
@@ -1367,6 +1374,7 @@ describe("server state projection", () => {
         connect: Effect.void,
         disconnect: Effect.void,
         retryNow: Effect.void,
+        setDiscoveredRoutes: () => Effect.void,
       } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
       const savedConfigs = yield* Queue.unbounded<ServerConfig>();
       const cache = Persistence.EnvironmentCacheStore.of({
@@ -1431,6 +1439,7 @@ describe("server state projection", () => {
         connect: Effect.void,
         disconnect: Effect.void,
         retryNow: Effect.void,
+        setDiscoveredRoutes: () => Effect.void,
       } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
       const savedConfigs = yield* Queue.unbounded<ServerConfig>();
       const cache = Persistence.EnvironmentCacheStore.of({
@@ -1570,6 +1579,7 @@ describe("launcher update resume", () => {
       connect: Effect.void,
       disconnect: Effect.void,
       retryNow: Effect.void,
+      setDiscoveredRoutes: () => Effect.void,
     } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
     type Environments = EnvironmentRegistry.EnvironmentRegistry["Service"];
     const run: Environments["run"] = (_environmentId, effect) =>
@@ -1749,17 +1759,46 @@ describe("provider setup commands", () => {
         target: TARGET,
         state: yield* SubscriptionRef.make(AVAILABLE_CONNECTION_STATE),
         session: yield* SubscriptionRef.make(Option.some(session(client))),
-        prepared: yield* SubscriptionRef.make(Option.none<PreparedConnection>()),
+        prepared: yield* SubscriptionRef.make(
+          Option.some<PreparedConnection>({
+            environmentId: TARGET.environmentId,
+            label: TARGET.label,
+            httpBaseUrl: TARGET.httpBaseUrl,
+            socketUrl: TARGET.wsBaseUrl,
+            httpAuthorization: { _tag: "Bearer", token: "test" },
+            target: TARGET,
+          }),
+        ),
         connect: Effect.void,
         disconnect: Effect.void,
         retryNow: Effect.void,
+        setDiscoveredRoutes: () => Effect.void,
       } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
       const runtime = Atom.runtime(
-        Layer.merge(
+        Layer.mergeAll(
+          RpcHttp.layerRemoteHttpClient(async () =>
+            Response.json({
+              authenticated: true,
+              auth: {
+                policy: "remote-reachable",
+                bootstrapMethods: [],
+                sessionMethods: [],
+                sessionCookieName: "test",
+              },
+              scopes: [AuthProvidersManageScope],
+              permissions: [AuthProvidersManageScope],
+            }),
+          ),
           Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, {
             run: (_environmentId, effect) =>
               Effect.provideService(
                 effect,
+                EnvironmentSupervisor.EnvironmentSupervisor,
+                supervisor,
+              ),
+            followStream: (_environmentId, stream) =>
+              Stream.provideService(
+                stream,
                 EnvironmentSupervisor.EnvironmentSupervisor,
                 supervisor,
               ),
@@ -1824,6 +1863,7 @@ describe("provider setup commands", () => {
         connect: Effect.void,
         disconnect: Effect.void,
         retryNow: Effect.void,
+        setDiscoveredRoutes: () => Effect.void,
       } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
       const runtime = Atom.runtime(
         Layer.merge(
@@ -1915,6 +1955,7 @@ describe("resource telemetry history", () => {
                 connect: Effect.void,
                 disconnect: Effect.void,
                 retryNow: Effect.void,
+                setDiscoveredRoutes: () => Effect.void,
               });
               const environments = EnvironmentRegistry.EnvironmentRegistry.of({
                 run: (_id, effect) =>

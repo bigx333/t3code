@@ -4,8 +4,12 @@ import {
   ConnectionTransientError,
   Connectivity,
   Wakeups,
+  makeLanDiscoveryVerifier,
 } from "@t3tools/client-runtime/connection";
 import { managedRelayAccountChanges, managedRelaySessionAtom } from "@t3tools/client-runtime/relay";
+import { LanDiscoveryService } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
+import { lanDiscovery } from "../../modules/t3-lan-discovery/src";
 import * as Clock from "effect/Clock";
 import { msg } from "gt-react-native";
 import { m } from "../i18n/messages";
@@ -16,6 +20,8 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import Constants from "expo-constants";
+import * as ExpoCrypto from "expo-crypto";
+import { fetch as expoFetch } from "expo/fetch";
 import * as Network from "expo-network";
 import { AppState } from "react-native";
 
@@ -26,6 +32,8 @@ import { appAtomRegistry } from "../state/atom-registry";
 import { mobileApplicationActiveWakeup } from "./app-state-wakeups";
 import * as EnvironmentOwnedDataCleanup from "./environment-owned-data-cleanup";
 import * as ConnectionStorage from "./storage";
+
+const isLanDiscoveryServices = Schema.is(Schema.Array(LanDiscoveryService));
 
 function networkStatus(state: Network.NetworkState): "unknown" | "offline" | "online" {
   if (state.isConnected === false) {
@@ -265,12 +273,71 @@ const layerPlatformConnectionSource = Layer.succeed(
 const layerProvidedConnectionStorage = ConnectionStorage.layer.pipe(Layer.provide(Runtime.layer));
 const layerProvidedCapabilities = layerCapabilities.pipe(Layer.provide(Runtime.layer));
 
+const layerLanDiscoverySource = Layer.effect(
+  ClientCapabilities.LanDiscoverySource,
+  Effect.gen(function* () {
+    const queue = yield* Queue.sliding<ReadonlyArray<LanDiscoveryService>>(1);
+    let pending = Promise.resolve();
+    const schedule = (operation: () => Promise<void>) => {
+      pending = pending.then(operation).catch(() => undefined);
+      return pending;
+    };
+    const start = () => schedule(() => lanDiscovery.start());
+    const stop = () => schedule(() => lanDiscovery.stop());
+    let refreshing: Promise<void> | undefined;
+    const refresh = () => {
+      if (!refreshing) {
+        refreshing = schedule(() =>
+          AppState.currentState === "active" ? lanDiscovery.refresh() : Promise.resolve(),
+        ).finally(() => {
+          refreshing = undefined;
+        });
+      }
+      return refreshing;
+    };
+    yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        const subscription = lanDiscovery.addListener("servicesChanged", ({ services }) => {
+          if (isLanDiscoveryServices(services)) Queue.offerUnsafe(queue, services);
+        });
+        const state = AppState.addEventListener("change", (value) => {
+          if (value === "active") void start().then(refresh);
+          else void stop();
+        });
+        if (AppState.currentState === "active") void start();
+        return { subscription, state };
+      }),
+      ({ subscription, state }) =>
+        Effect.gen(function* () {
+          subscription.remove();
+          state.remove();
+          yield* Effect.promise(stop);
+          yield* Queue.shutdown(queue);
+        }),
+    );
+    return {
+      services: Stream.fromQueue(queue),
+      refresh: Effect.promise(refresh),
+    };
+  }),
+);
+
+const layerLanDiscoveryVerifier = Layer.succeed(
+  ClientCapabilities.LanDiscoveryVerifier,
+  makeLanDiscoveryVerifier({
+    randomBytes: ExpoCrypto.getRandomBytes,
+    fetchProof: (url, init) => expoFetch(url, init),
+  }),
+);
+
 type ConnectionPlatformLayerSource =
   | typeof layerProvidedConnectionStorage
   | typeof Runtime.layer
   | typeof layerConnectivity
   | typeof layerWakeups
   | typeof layerProvidedCapabilities
+  | typeof layerLanDiscoveryVerifier
+  | typeof layerLanDiscoverySource
   | typeof layerPlatformConnectionSource
   | typeof EnvironmentOwnedDataCleanup.layer;
 
@@ -284,6 +351,8 @@ export const layer: Layer.Layer<
   layerConnectivity,
   layerWakeups,
   layerProvidedCapabilities,
+  layerLanDiscoveryVerifier,
+  layerLanDiscoverySource,
   layerPlatformConnectionSource,
   EnvironmentOwnedDataCleanup.layer,
 );

@@ -125,6 +125,11 @@ If your HTTPS endpoint uses a certificate from your own certificate authority,
 install that CA on Android as a **CA certificate** in its security settings; the
 Android app then trusts it.
 
+On macOS, allow T3 Code in **System Settings → Privacy & Security → Local Network**
+on the connecting Mac. If a connection stops working after a macOS update, check
+that permission again, then return to T3 Code and retry the saved connection.
+Terminal access working does not mean the desktop app has the same permission.
+
 Pairing authorizes that device for future connections. Use a fresh one-time link
 for each new device; you do not need the original token to reconnect. A device
 stays signed in while you keep using it, until you revoke it in **Settings →
@@ -146,16 +151,34 @@ that machine does not have yet; add that address with **Add route** instead.
 Pairing again over an address the machine already has still works. A new route
 is placed by speed, in that order, and you can reorder routes at any time.
 
-While connected through T3 Connect or a paired address, T3 Code also learns the
-machine's current LAN and Tailscale addresses and adds them as routes, so
-pairing once through T3 Connect is enough to use the LAN at home. When the
-machine's LAN address changes, for example after it joins another Wi-Fi network,
-the learned route follows it. The machine must allow network access for its LAN
-address to be learned: **Network access** in the desktop app, or the
+While connected through T3 Connect or a paired address, T3 Code learns the
+machine's current LAN and Tailscale addresses and adds them as routes. The
+machine must allow network access: **Network access** in the desktop app, or the
 [local network](./background-service.md#local-network-access) choice in `t3 up`.
-You can reorder a learned route, but not remove it; it
-goes away with the route it was learned through, or when the machine stops
-reporting that address.
+You can reorder a learned route, but not remove it. It goes away with the route
+it was learned through, or when the machine stops reporting that address.
+
+A device paired over HTTPS or Tailscale also learns the machine's LAN address.
+Its paired token is never sent there. T3 Code uses a separate local network
+credential tied to that device, which appears under connected clients as
+"(local network)" and is removed when you revoke the device. Its credential cannot call access-management APIs directly; terminal and agent
+access still allow commands on the machine. Because LAN traffic is unencrypted,
+this route is placed after your Tailscale,
+HTTPS, SSH, and T3 Connect routes, so it is used only when they do not answer.
+A LAN address learned through T3 Connect is placed the same way. Drag it higher
+to prefer it at home.
+
+T3 Code also learns the machine's local network name, such as `my-mac.local`,
+once it has connected over a plain HTTP address or T3 Connect. The name stays
+the same when addresses change, so the machine is reachable again after you
+replace your router or switch Wi-Fi networks, including from a browser opened
+over HTTP. It needs a network that allows Bonjour.
+
+On desktop and mobile, a machine paired over an HTTP IPv4 LAN address can be
+found again on the same network if its address changes. Allow local network
+access when prompted. A device paired over HTTPS or Tailscale does the same once
+it has a local network credential. Browsers and devices on another network still need a reachable route,
+as do networks that block Bonjour or isolate guests.
 
 T3 Code connects over the first route that answers. Away from home, a LAN
 address that does not answer is checked briefly and skipped. It is only tried
@@ -247,6 +270,10 @@ In the desktop app, open **Settings → Environments → Add environment**, choo
 **SSH**, and enter a host or SSH alias such as `user@example.com`. T3 Code starts
 or reuses a server there and opens the port forward for you. Projects, provider
 credentials, and agent work stay on the remote machine.
+
+If the host has T3 Code's background service installed, keep it running. Restart
+a stopped service with `t3 service restart` on the host before reconnecting over
+SSH.
 
 The remote host must be Linux or an Apple Silicon Mac with `curl` or `wget`,
 `tar`, `sha256sum` or `shasum`, and [provider setup](./install.md#providers).
@@ -438,6 +465,29 @@ manages access there, it makes the pairing code itself; otherwise paste one
 from that machine's **Settings → Sharing & access**. An address you type always
 needs a pasted code. From a terminal, use
 `t3 environment link <address> --pairing-code <code> --access <mode>`.
+
+Desktop pairing lets you use another machine's environment in this app. An agent
+link separately lets agents on the selected environment work on the destination.
+Neither grants access in the opposite direction.
+
+For an encrypted LAN agent link without a proxy or Tailscale, enter
+`ssh://user@host` (or `ssh://user@host:2222` for a different SSH port). Enable
+**Remote Login** on the destination Mac and first establish SSH key access and
+verify its host key from the machine whose agents will use the link. That
+machine's SSH configuration and keys are used, even when you configure the link
+from another device. T3 Code manages the tunnel and reconnects it when needed.
+Use a fresh destination pairing code and select the access explicitly:
+
+```sh
+t3 environment link ssh://user@host --pairing-code <code> --access full-access
+```
+
+To add that host to the desktop app as well, use **Add environment → SSH** and
+enter the same host and user. A compatible CLI already installed on the host is
+reused; otherwise the desktop version must have published CLI archives. A missing
+preview archive is a release availability problem, not an SSH password failure.
+Agent links do not send credentials over plain HTTP LAN addresses; use SSH or
+HTTPS instead.
 
 To link many machines at once, choose **Link several…** (it appears once this
 app has two other machines saved). Tick the machines, pick one access level for

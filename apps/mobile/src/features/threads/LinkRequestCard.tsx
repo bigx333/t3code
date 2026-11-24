@@ -363,7 +363,7 @@ function LinkRequestSheet(props: {
             <SettingsChoiceRow
               label={gt("Another address…")}
               description={gt(
-                "Link a machine this app does not know, by its https or Tailscale address.",
+                "Link a machine this app does not know, by its HTTPS, Tailscale, or SSH address.",
               )}
               selected={selected === ANOTHER_ADDRESS}
               separated={machines.length > 0}
@@ -392,7 +392,7 @@ function LinkRequestSheet(props: {
               <Text className="font-sans text-xs text-foreground-muted">
                 <T>
                   This app has no address for <Var>{target.label}</Var> that another machine can
-                  reach. Enter its https or Tailscale address.
+                  reach. Enter its HTTPS, Tailscale, or SSH address.
                 </T>
               </Text>
             ) : null}

@@ -4233,7 +4233,6 @@
   "ea745611e41bb8b5": "Länka {targetName}",
   "7fc043db70cdbe3f": "Dator",
   "4474db19bf5700c9": "En annan adress…",
-  "5f94f772730a004b": "Länka en dator som appen inte känner till, via dess https- eller Tailscale-adress.",
   "57a631f659db8c6b": "Klistra in koden",
   "8b61f3e4b14d099b": "Använd den här länken",
   "b2a0c42daed47c36": "Länka",
@@ -4242,15 +4241,6 @@
   "a5df4321e1820773": "Agenter här kan sedan starta, skicka meddelanden till och vänta på trådar där. Den visas under Auktoriserade klienter i datorns Delning och åtkomst, där den kan återkallas.",
   "9cab5bd6475291cf": "Kontrollera den här adressen",
   "03ce9bea5f88ddbd": "Appen kan inte bekräfta att det är en av dina datorer. Parkopplingskoden du klistrar in skickas dit.",
-  "71a4002c45077fe2": [
-    "Den här appen har ingen adress till ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " som en annan dator kan nå. Ange dess https- eller Tailscale-adress."
-  ],
   "c205277bd4ab61d2": [
     "Den här miljön är redan länkad till ",
     {
@@ -5643,5 +5633,17 @@
   "42c2e2c16fb65659": "färdighetsbibliotek",
   "1e123a9806667790": "delade färdigheter",
   "7ae5a73f951efbee": "Gör Lauren Tans pstack-arbetsflöden tillgängliga som färdigheter hos alla leverantörer. Kör {command} en gång för att välja modeller.",
-  "9de62c1c16a779f9": "pstack"
+  "9de62c1c16a779f9": "pstack",
+  "3b718923ce25187c": "För att ansluta via det lokala nätverket på macOS, öppna Systeminställningar → Integritet och säkerhet → Lokalt nätverk och ge T3 Code (eller webbläsaren) åtkomst. Gå tillbaka hit och försök igen. Du behöver inte parkoppla på nytt.",
+  "6f91bca937b0b79e": "Den upptäckta slutpunkten kunde inte verifiera sin identitet.",
+  "b423bcd08ac18693": "Länka en dator som appen inte känner till via dess HTTPS-, Tailscale- eller SSH-adress.",
+  "0450a920ec95b795": [
+    "Appen har ingen adress till ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " som en annan dator kan nå. Ange dess HTTPS-, Tailscale- eller SSH-adress."
+  ]
 }

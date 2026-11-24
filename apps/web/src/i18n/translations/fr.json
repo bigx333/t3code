@@ -3690,16 +3690,6 @@
   "a5d211c810f56b07": "Refuser",
   "481373fbd4042755": "Seule une session qui gère les accès ici peut répondre.",
   "474774458cbb272c": "Adresse",
-  "89a68ae66d9266dc": "Cette app n’a pas d’adresse de machine joignable par une autre machine. Saisissez son adresse https ou Tailscale.",
-  "71a4002c45077fe2": [
-    "Cette app n’a pour ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " aucune adresse joignable par une autre machine. Saisissez son adresse https ou Tailscale."
-  ],
   "7ebb23e6bf9b19e8": "Code d’appairage",
   "e8235ebb43ad7228": "Créez un lien sur une machine : Paramètres → Partage et accès → Clients autorisés → Créer un lien, puis collez son code ici.",
   "a974e6c3c613e452": [
@@ -12806,5 +12796,18 @@
   "a133e14731aa61a0": "Bibliothèque de skills",
   "ccdf81fb39ee7921": "bêta skills partagées dossier agents .agents/skills lien claude codex antigravity cursor opencode un ensemble comptes",
   "7ae5a73f951efbee": "Rendez les workflows pstack de Lauren Tan disponibles sous forme de skills chez tous les fournisseurs. Exécutez {command} une fois pour choisir les modèles.",
-  "31ab377f509c09bf": "Rétablir le réglage par défaut de pstack"
+  "31ab377f509c09bf": "Rétablir le réglage par défaut de pstack",
+  "3b718923ce25187c": "Pour établir une connexion au réseau local sous macOS, ouvrez Réglages Système > Confidentialité et sécurité > Réseau local et autorisez T3 Code (ou votre navigateur). Revenez ici et réessayez ; il n’est pas nécessaire de refaire l’association.",
+  "6f91bca937b0b79e": "Le point de connexion découvert n’a pas pu prouver son identité.",
+  "abc0e5804d7d832a": "Cette app n’a pour une machine aucune adresse joignable par une autre machine. Saisissez son adresse HTTPS, Tailscale ou au format ssh://user@host.",
+  "5c86fb730057faa7": [
+    "Cette app n’a pour ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " aucune adresse joignable par une autre machine. Saisissez son adresse HTTPS, Tailscale ou au format ssh://user@host."
+  ],
+  "10aaf6070f636b7e": "Sur macOS, ouvrez Réglages Système > Confidentialité et sécurité > Réseau local, autorisez T3 Code, puis réessayez. Vérifiez aussi que l’hôte n’est pas en veille et qu’il est connecté au même réseau."
 }
