@@ -1,7 +1,8 @@
-import type {
-  OrchestrationV2ProviderFailure,
-  OrchestrationV2Run,
-  OrchestrationV2TurnItem,
+import {
+  isOrchestrationV2PublicationRun,
+  type OrchestrationV2ProviderFailure,
+  type OrchestrationV2Run,
+  type OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
@@ -64,7 +65,7 @@ export function latestExecutedRun(
 ): OrchestrationV2Run | null {
   let latest: OrchestrationV2Run | null = null;
   for (const run of runs) {
-    if (run.status === "queued") continue;
+    if (run.status === "queued" || isOrchestrationV2PublicationRun(run)) continue;
     if (run.status === "cancelled" && run.startedAt === null) continue;
     if (latest === null || runRanAfter(run, latest)) latest = run;
   }
@@ -131,6 +132,7 @@ export function latestUnheldRun(
   for (const run of runs) {
     if (run.status === "queued" && run.queueHeld === true) continue;
     if (outlivedBeforeStart(run, runs)) continue;
+    if (isOrchestrationV2PublicationRun(run)) continue;
     if (latest === null || run.ordinal > latest.ordinal) latest = run;
   }
   return latest;

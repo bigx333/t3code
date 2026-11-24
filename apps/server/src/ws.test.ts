@@ -178,6 +178,7 @@ import * as ServerSettings from "./serverSettings.ts";
 import * as ManagedPolicy from "./policy/ManagedPolicy.ts";
 
 import * as EventStore from "./orchestration-v2/EventStore.ts";
+import * as ThreadGroupService from "./orchestration-v2/ThreadGroupService.ts";
 import * as ThreadManagement from "./orchestration-v2/ThreadManagementService.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
 import * as ProjectionStore from "./orchestration-v2/ProjectionStore.ts";
@@ -901,6 +902,7 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(ServerSelfUpdate.ServerSelfUpdate)({}),
   Layer.mock(PstackPack.PstackPack)({ catalog: Effect.undefined }),
   Layer.mock(SkillsLibrary.SkillsLibrary)({}),
+  Layer.mock(ThreadGroupService.ThreadGroupService)({}),
   Layer.mock(NpmRelease.NpmRelease)({}),
   Layer.mock(SessionStore.SessionStore)({ cookieName: "config-test", legacyCookieName: undefined }),
   Layer.mock(SourceControlDiscovery.SourceControlDiscovery)({}),
@@ -1101,6 +1103,7 @@ it.effect.each([
             Effect.orDie,
           ),
         }),
+        Layer.mock(ThreadGroupService.ThreadGroupService)({}),
         Layer.mock(ProviderRegistry.ProviderRegistry)({
           getProviders: Effect.succeed([]),
           streamChanges: Stream.never,

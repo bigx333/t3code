@@ -55,6 +55,7 @@ import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as ResourceCleanupService from "./ResourceCleanupService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
 import * as RuntimeRequestService from "./RuntimeRequestService.ts";
+import * as ThreadGroupService from "./ThreadGroupService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
 import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
@@ -442,6 +443,7 @@ export const layerProduction = Layer.mergeAll(
   layerScratchThreadPromotionProvided,
   layerSecretRequestsProvided,
   layerFeedbackStoreProvided,
+  ThreadGroupService.layer.pipe(Layer.provide(layerOrchestratorProvided)),
   GuestShareService.layer.pipe(
     Layer.provide(Layer.merge(layerOrchestratorProvided, layerCommandOutputHubProvided)),
   ),

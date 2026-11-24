@@ -1,3 +1,7 @@
+import { ThreadGroupBar } from "./ThreadGroupBar";
+import { ThreadGroupLiveRows } from "./ThreadGroupLiveRows";
+import { AppText as Text } from "../../components/ui/AppText";
+import { isSeatedSeatThread } from "@t3tools/client-runtime/state/thread-group";
 import { ChildThreadApprovals } from "./ChildThreadApprovals";
 import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import { useOpenThreadInspector } from "./thread-inspector-navigation";
@@ -14,7 +18,11 @@ import { useAtomMount, useAtomValue } from "@effect/atom-react";
 import { mobilePreferencesAtom } from "../../state/preferences";
 import { parseThreadKey, threadKey } from "@t3tools/client-runtime/state/entities";
 import { createThreadVisitTracker } from "@t3tools/client-runtime/state/thread-visits";
-import { useChildThreadInputs, useThreadReportedModelSelection } from "../../state/entities";
+import {
+  useChildThreadInputs,
+  useThreadReportedModelSelection,
+  useQuietThreadShell,
+} from "../../state/entities";
 import { UsageLimitRecoveryCard } from "./UsageLimitRecoveryCard";
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import {
@@ -89,7 +97,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { useGT, useMessages } from "gt-react-native";
+import { T, useGT, useMessages } from "gt-react-native";
 import { m } from "../../i18n/messages";
 import {
   AppState,
@@ -506,10 +514,11 @@ function ThreadDetailBody(
   const nativeMetrics = usesNativeWorkspaceColumns ? columnMetrics : screenMetrics;
   const controlInsets = deriveBottomControlInsets(nativeMetrics);
   const selectedThreadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
+  // A seat's own row already says it is waiting, and it is not a side chat to the user.
   const childThreadInputs = useChildThreadInputs({
     environmentId: props.environmentId,
     threadId: props.selectedThread.id,
-  });
+  }).filter((child) => !isSeatedSeatThread(props.selectedThread.group, child.id));
   const composerError = useAtomValue(threadComposerErrorsAtom)[selectedThreadKey]?.message ?? null;
   const preferences = useAtomValue(mobilePreferencesAtom);
   const toolCallVisibility = AsyncResult.isSuccess(preferences)
@@ -521,6 +530,15 @@ function ThreadDetailBody(
   const defaultComposerEditorRef = useRef<ComposerEditorHandle>(null);
   const composerEditorRef = props.draftMode?.editorRef ?? defaultComposerEditorRef;
   const isProviderSubagent = isProviderNativeSubagentThread(props.selectedThread.source);
+  const parentThread = useQuietThreadShell(
+    props.selectedThread.lineage.parentThreadId === null
+      ? null
+      : {
+          environmentId: props.environmentId,
+          threadId: props.selectedThread.lineage.parentThreadId,
+        },
+  );
+  const isGroupSeat = isSeatedSeatThread(parentThread?.group, props.selectedThread.id);
   const editingRunId = props.queuedRunEdit?.runId ?? null;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- focuses the composer editor on the next animation frame when a queued run edit starts
   useEffect(() => {
@@ -878,6 +896,13 @@ function ThreadDetailBody(
           openLinkedThread({ environmentId: childInput.environmentId, threadId: childInput.id });
         },
       };
+    }
+    if (
+      props.selectedThread.groupDiscussionOpen &&
+      props.activeWorkStartedAt === null &&
+      contentPresentationKind === "ready"
+    ) {
+      return { kind: "preparing", label: gt("Group discussion") };
     }
     if (props.selectedThread.goal !== null && contentPresentationKind === "ready") {
       const goal = presentProviderGoal(props.selectedThread.goal, false, messages);
@@ -1537,6 +1562,7 @@ function ThreadDetailBody(
                   detailRef={props.selectedThreadDetailRef}
                   workspaceRoot={props.threadCwd}
                   feed={props.selectedThreadFeed}
+                  group={props.selectedThread.group}
                   pendingHandoff={props.pendingHandoff}
                   statusLines={statusLines}
                   worktreeSetup={props.worktreeSetup}
@@ -1550,7 +1576,7 @@ function ThreadDetailBody(
                   // A native subagent has no composer to edit a pending message in;
                   // Cancel on the edit banner would discard it.
                   onEditPendingMessage={
-                    isProviderSubagent || pendingMessageEditBlocked
+                    isProviderSubagent || isGroupSeat || pendingMessageEditBlocked
                       ? null
                       : handleEditPendingMessage
                   }
@@ -1737,6 +1763,16 @@ function ThreadDetailBody(
                       threadRef={props.selectedThreadDetailRef}
                       canOperateThread={props.canOperateThread}
                     />
+                    {props.draftMode ? null : <ThreadGroupBar thread={props.selectedThread} />}
+                    {props.selectedThread.group == null ? null : (
+                      <ThreadGroupLiveRows
+                        threadRef={{
+                          environmentId: props.environmentId,
+                          threadId: props.selectedThread.id,
+                        }}
+                        group={props.selectedThread.group}
+                      />
+                    )}
                     {props.draftMode ? null : (
                       <ThreadSideChatsRow
                         environmentId={props.environmentId}
@@ -1873,7 +1909,11 @@ function ThreadDetailBody(
                 </View>
 
                 <View style={composerSlotHidden ? { display: "none" } : undefined}>
-                  {isProviderSubagent ? (
+                  {isGroupSeat ? (
+                    <Text className="px-4 pb-4 text-sm text-foreground-muted">
+                      <T>Reply in the group conversation.</T>
+                    </Text>
+                  ) : isProviderSubagent ? (
                     <View
                       className="self-center px-3 pt-1.5"
                       style={{

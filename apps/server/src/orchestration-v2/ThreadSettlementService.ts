@@ -192,6 +192,8 @@ export function isAutoSettlementCandidate(
   if (backgroundWorkHoldsCompletion(pendingTasks)) return false;
   // Settling ends a watch, which would silently drop a reviewer's later comments.
   if (pendingTasks.some(isPullRequestWatchTask)) return false;
+  // A seat runs on its own thread, so this thread's runs cannot say whether a discussion is open.
+  if (thread.group?.discussion != null) return false;
   if (threadHasQueuedTurnStart(thread, nowMs)) return false;
   // Interrupted runs must keep the same snooze protection the sidebar shows.
   return !isSnoozed(thread, nowMs);

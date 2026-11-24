@@ -25,6 +25,7 @@ import {
   withLinkedComposerPullRequestsFirst,
 } from "@t3tools/shared/composerPullRequestMatches";
 import { formatProviderSkillDisplayName } from "@t3tools/shared/inlineSkills";
+import type { ThreadGroupParticipant } from "@t3tools/client-runtime/state/thread-group";
 
 import type { ComposerTrigger } from "../../composer-logic";
 import type { DraftId } from "../../composerDraftStore";
@@ -83,6 +84,8 @@ export function useComposerMenuItems({
   workspaceSkillsScanning,
   questionAttachmentTarget,
   modelMentions,
+  groupParticipants,
+  groupInviteAvailable,
 }: {
   readonly composerTrigger: ComposerTrigger | null;
   readonly environmentId: EnvironmentId;
@@ -102,6 +105,9 @@ export function useComposerMenuItems({
   readonly showSkillsInSlashMenu: boolean;
   readonly workspaceSkillsScanning: boolean;
   readonly questionAttachmentTarget: DraftId | null;
+  /** Who `@` can address while a group is active; empty otherwise. */
+  readonly groupParticipants: ReadonlyArray<ThreadGroupParticipant>;
+  readonly groupInviteAvailable: boolean;
   readonly modelMentions: {
     readonly instanceEntries: ReadonlyArray<ProviderInstanceEntry>;
     readonly modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<ModelEsque>>;
@@ -211,6 +217,7 @@ export function useComposerMenuItems({
   const items = ((): ComposerCommandItem[] => {
     if (!composerTrigger) return [];
     if (composerTrigger.kind === "path") {
+      const memberQuery = composerTrigger.query.toLowerCase();
       return [
         ...matchComposerThreadItems(
           {
@@ -223,6 +230,21 @@ export function useComposerMenuItems({
           },
           messages,
         ),
+        ...groupParticipants
+          .filter(
+            (participant) =>
+              participant.handle.toLowerCase().startsWith(memberQuery) ||
+              participant.label.toLowerCase().startsWith(memberQuery),
+          )
+          .map((participant) => ({
+            id: `group-member:${participant.handle}`,
+            type: "group-member" as const,
+            handle: participant.handle,
+            label: `@${participant.handle}`,
+            description: participant.isPrimary
+              ? gt("{participant} · primary", { participant: participant.label })
+              : participant.label,
+          })),
         // An answer to an agent's question carries thread links, not machines.
         ...(questionAttachmentTarget === null && offersMachines
           ? matchComposerEnvironmentItems(
@@ -277,6 +299,17 @@ export function useComposerMenuItems({
                 command: "btw",
                 label: "/btw",
                 description: sideChatDisabledReason ?? gt("Same as /side"),
+              },
+            ] as const)
+          : []),
+        ...(groupInviteAvailable
+          ? ([
+              {
+                id: "slash:invite",
+                type: "slash-command",
+                command: "invite",
+                label: "/invite",
+                description: gt("Invite a model into this thread"),
               },
             ] as const)
           : []),

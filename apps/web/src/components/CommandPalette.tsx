@@ -2,6 +2,7 @@ import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { decodeMsg, msg, T, useGT, useMessages, Var } from "gt-react";
 import { m, type MessageResolver } from "../i18n/messages";
 import { ThreadContextDragGhost } from "./chat/ThreadContextDragGhost";
+import { canInviteToGroupAtom, requestGroupInvite } from "./chat/groupAvailability";
 import { threadPullRequestLinkMode } from "@t3tools/client-runtime/thread-pull-request-compatibility";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 
@@ -84,6 +85,7 @@ import {
   TextSearchIcon,
   UserPlusIcon,
   WorkflowIcon,
+  UsersIcon,
 } from "lucide-react";
 import { openThreadFind } from "./chat/threadFindStore";
 import { dispatchPreviewAction } from "./preview/previewActionBus";
@@ -521,6 +523,9 @@ function OpenCommandPaletteDialog(props: {
   );
   const canShareActiveThreadWithGuest = useAtomValue(
     canShareWithGuestAtom(activeThread?.environmentId ?? ("" as EnvironmentId)),
+  );
+  const canInviteToActiveThreadGroup = useAtomValue(
+    canInviteToGroupAtom(activeThread?.environmentId ?? ("" as EnvironmentId)),
   );
   const activeThreadReferenceCopyTarget =
     referenceThreadRef === null || (pathname === "/pull-requests" && !openPanelPullRequestUrl)
@@ -1533,6 +1538,26 @@ function OpenCommandPaletteDialog(props: {
       icon: <PullRequestGlyph.link className={ITEM_ICON_CLASS} />,
       run: async () => {
         useRightPanelStore.getState().open(threadRef, "pull-requests");
+      },
+    });
+  }
+
+  if (
+    activeThread !== null &&
+    canInviteToActiveThreadGroup &&
+    activeThread.lineage.sideChat !== true &&
+    activeThread.lineage.relationshipToParent !== "subagent"
+  ) {
+    const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
+    actionItems.push({
+      kind: "action",
+      value: "action:invite-to-group",
+      searchTerms: ["invite", "model", "group", "peer", "add", "another", "provider"],
+      title: gt("Invite a model"),
+      description: gt("Add a model from any provider to this thread"),
+      icon: <UsersIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        requestGroupInvite(threadRef);
       },
     });
   }

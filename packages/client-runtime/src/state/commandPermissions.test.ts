@@ -233,6 +233,9 @@ describe("command permissions", () => {
     WS_METHODS.workflowsAnswer,
     WS_METHODS.workflowsResume,
     WS_METHODS.workflowsCancel,
+    ORCHESTRATION_V2_WS_METHODS.threadGroupInvite,
+    ORCHESTRATION_V2_WS_METHODS.threadGroupRemove,
+    ORCHESTRATION_V2_WS_METHODS.threadGroupEnd,
   ])("uses the target grant for both availability and execution of %s", (method) =>
     Effect.gen(function* () {
       const registry = yield* setup;

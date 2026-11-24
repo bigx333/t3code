@@ -123,6 +123,7 @@ import * as ServerConfig from "./config.ts";
 import * as EnvironmentTheme from "./environmentTheme.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
+import * as ThreadGroupService from "./orchestration-v2/ThreadGroupService.ts";
 import * as ThreadManagementService from "./orchestration-v2/ThreadManagementService.ts";
 import * as ThreadViewers from "./orchestration-v2/ThreadViewers.ts";
 import * as CommandOutputHub from "./orchestration-v2/CommandOutputHub.ts";
@@ -1474,6 +1475,7 @@ export const layerWsRpc = (
       const currentSessionId = currentSession.sessionId;
       const sql = yield* SqlClient.SqlClient;
       const threadManagement = yield* ThreadManagementService.ThreadManagementService;
+      const threadGroups = yield* ThreadGroupService.ThreadGroupService;
       const intakeContext = yield* Effect.context<
         | ThreadManagementService.ThreadManagementService
         | ThreadLaunchService.ThreadLaunchService
@@ -2100,6 +2102,10 @@ export const layerWsRpc = (
             ),
           ),
         [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: (input) => threadManagement.stopWorkflow(input),
+        [ORCHESTRATION_V2_WS_METHODS.threadGroupInvite]: (input) =>
+          threadGroups.invite({ ...input, createdBy: "user", creationSource: "web" }),
+        [ORCHESTRATION_V2_WS_METHODS.threadGroupRemove]: (input) => threadGroups.remove(input),
+        [ORCHESTRATION_V2_WS_METHODS.threadGroupEnd]: (input) => threadGroups.end(input),
         [ORCHESTRATION_V2_WS_METHODS.forceStopThread]: (input) =>
           threadManagement.forceStopThread(input),
         [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: (input) =>

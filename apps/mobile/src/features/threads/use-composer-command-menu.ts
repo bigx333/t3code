@@ -1,4 +1,9 @@
 import { threadPullRequestKeyOf } from "@t3tools/client-runtime/thread-pull-requests";
+import {
+  groupParticipants,
+  isGroupActive,
+  type ThreadGroup,
+} from "@t3tools/client-runtime/state/thread-group";
 import * as Dialog from "../../components/ui/Dialog";
 import type {
   EnvironmentId,
@@ -116,6 +121,7 @@ export function buildComposerSlashCommandItems(
     /** T3's `/clear` replaces the provider's, which would clear a session T3 still treats as live. */
     readonly offersFreshSession?: boolean;
     readonly offersSideChat?: boolean;
+    readonly offersGroupInvite?: boolean;
     readonly selectedProviderStatus: Pick<ServerProvider, "driver" | "slashCommands"> | null;
   },
   resolve: MessageResolver = m,
@@ -132,6 +138,16 @@ export function buildComposerSlashCommandItems(
         },
       ]
     : [];
+
+  if (input.offersGroupInvite && "invite".includes(query)) {
+    items.push({
+      id: "cmd:invite",
+      type: "slash-command",
+      command: "invite",
+      label: "/invite",
+      description: resolve(msg("Invite a model to this thread")),
+    });
+  }
 
   // Providers expand commands only at the start of a message. T3 commands
   // change local state and do not have this restriction, except `/clear`.
@@ -245,6 +261,8 @@ export function resolveComposerCommandSelection(input: {
     replacement = `/${item.command} `;
   } else if (item.type === "provider-slash-command") {
     replacement = `/${item.command.name} `;
+  } else if (item.type === "group-member") {
+    replacement = `@${item.handle} `;
   } else if (item.type === "model") {
     replacement = `${formatComposerModelMention(item.option.selection.instanceId, item.option.selection.model)} `;
   }
@@ -274,8 +292,10 @@ export function useComposerCommandMenu({
   onOpenModelPicker,
   modelOptions,
   modelProviders,
+  group,
   onFreshSession,
   offersSideChat = false,
+  onGroupInvite,
 }: {
   readonly draftMessage: string;
   readonly ownerKey: string | null;
@@ -301,9 +321,11 @@ export function useComposerCommandMenu({
   readonly onOpenModelPicker: () => void;
   readonly modelOptions?: ReadonlyArray<ModelOption>;
   readonly modelProviders?: ReadonlyArray<ServerProvider>;
+  readonly group?: ThreadGroup | null;
   /** Arms a fresh session for the next message; absent where `/clear` is unavailable. */
   readonly onFreshSession?: () => void;
   readonly offersSideChat?: boolean;
+  readonly onGroupInvite?: () => void;
 }) {
   const gt = useGT();
   const messages = useMessages();
@@ -411,6 +433,7 @@ export function useComposerCommandMenu({
           offersUsageLimits,
           offersFreshSession: onFreshSession !== undefined,
           offersSideChat,
+          offersGroupInvite: onGroupInvite !== undefined,
           selectedProviderStatus: selectedProviderStatus
             ? {
                 ...selectedProviderStatus,
@@ -544,7 +567,20 @@ export function useComposerCommandMenu({
         modelOptions && modelProviders
           ? buildComposerModelItems(modelOptions, trigger.query, modelProviders)
           : [];
+      const members = isGroupActive(group) ? groupParticipants(group) : [];
+      const groupItems = members
+        .filter((member) =>
+          `${member.handle} ${member.label}`.toLowerCase().includes(trigger.query.toLowerCase()),
+        )
+        .map((member) => ({
+          id: `group:${member.member}`,
+          type: "group-member" as const,
+          handle: member.handle,
+          label: `@${member.handle}`,
+          description: `${member.label}${member.isPrimary ? " · primary" : " · group member"}`,
+        }));
       return [
+        ...groupItems,
         ...threadItems,
         ...environmentItems,
         ...modelItems,
@@ -673,6 +709,10 @@ export function useComposerCommandMenu({
     };
     if (item.type === "slash-command" && item.command === "model") {
       clearTriggerThen(onOpenModelPicker);
+      return;
+    }
+    if (item.type === "slash-command" && item.command === "invite" && onGroupInvite) {
+      clearTriggerThen(onGroupInvite);
       return;
     }
     if (item.type === "slash-command" && item.command === "clear" && onFreshSession) {

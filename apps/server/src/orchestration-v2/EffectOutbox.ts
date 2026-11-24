@@ -6,6 +6,7 @@ import {
   ModelSelection,
   NodeId,
   NonNegativeInt,
+  OrchestrationV2ThreadGroupMember,
   ProviderSessionId,
   RunAttemptId,
   ProviderApprovalDecision,
@@ -138,6 +139,16 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     type: Schema.Literal("delegated-tasks.stop"),
     reason: Schema.optional(Schema.String),
   }),
+  Schema.Struct({
+    type: Schema.Literal("thread-group.deliver"),
+    member: OrchestrationV2ThreadGroupMember,
+    /** The user message this delivers. Absent for a reaction turn. */
+    messageId: Schema.optional(MessageId),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread-group.stop-seats"),
+    seatThreadIds: Schema.Array(ThreadId),
+  }),
 ]);
 export type OrchestrationEffectRequestV2 = typeof OrchestrationEffectRequestV2.Type;
 
@@ -152,6 +163,8 @@ export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
   "attachment.cleanup",
   "thread-title.generate",
   "delegated-tasks.stop",
+  "thread-group.deliver",
+  "thread-group.stop-seats",
 ] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
 
 export const PROCESS_BOUND_EFFECT_TYPES = [

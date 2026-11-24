@@ -1,5 +1,11 @@
 import { shouldPreserveAssistantLineBreaks } from "@t3tools/shared/assistantInsights";
 import { MessageId, type TurnItemId } from "@t3tools/contracts";
+import {
+  groupRowSpeaker,
+  isQuietPass,
+  quietPassLine,
+  withoutCloseLine,
+} from "@t3tools/client-runtime/state/thread-group";
 import { canForkProjectedAssistantItem } from "@t3tools/client-runtime/state/thread-workflows";
 import { agentWorkingDirectories } from "@t3tools/client-runtime/workspace-basename-lookup";
 import { T, useGT, useMessages } from "gt-react";
@@ -33,14 +39,34 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
     row.message.streaming ? ctx.threadRef : null,
     row.projectedItem?.item.id,
   );
-  const text = liveText ?? row.message.text;
+  const rawText = liveText ?? row.message.text;
+  const item = row.projectedItem?.item;
+  const speaker = groupRowSpeaker(ctx.group, {
+    speaker: item?.type === "assistant_message" ? item.speaker : undefined,
+    run: ctx.group == null ? undefined : ctx.runs.find((run) => run.id === item?.runId),
+  });
+  const text = speaker === null ? rawText : withoutCloseLine(rawText);
   const messageText =
     text || (row.message.streaming || row.suppressEmptyResponse ? "" : gt("(empty response)"));
+  if (speaker !== null && !row.message.streaming && isQuietPass(rawText)) {
+    return (
+      <div className="min-w-0 px-1 py-0.5 text-xs text-muted-foreground">
+        <MessageAuthorHeading>{speaker.label}</MessageAuthorHeading>
+        {quietPassLine(speaker.label)}
+      </div>
+    );
+  }
 
   return (
     <>
       <div className="relative min-w-0 px-1 py-0.5">
-        <MessageAuthorHeading>T3 Code</MessageAuthorHeading>
+        <MessageAuthorHeading>{speaker?.label ?? "T3 Code"}</MessageAuthorHeading>
+        {speaker === null ? null : (
+          <p className="mb-0.5 flex items-baseline gap-1.5 text-xs" data-group-speaker="true">
+            <span className="font-medium">{speaker.label}</span>
+            <span className="text-muted-foreground">{speaker.model}</span>
+          </p>
+        )}
         <div data-thread-find-text="true">
           <AssistantCitationSource
             messageId={row.message.id}
@@ -62,6 +88,7 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
               isStreaming={Boolean(row.message.streaming)}
               lineBreaks={shouldPreserveAssistantLineBreaks(messageText)}
               skills={ctx.skills}
+              group={ctx.group}
               headingLevelOffset={MESSAGE_HEADING_LEVEL}
               onUseArtifactTemplate={ctx.onUseArtifactTemplate}
               onRunShellCommand={ctx.onRunShellCommand}
@@ -113,6 +140,7 @@ export function SentMessageTimelineRow({
           threadRef={ctx.threadRef ?? undefined}
           lineBreaks={shouldPreserveAssistantLineBreaks(row.text)}
           skills={ctx.skills}
+          group={ctx.group}
           headingLevelOffset={MESSAGE_HEADING_LEVEL}
           onUseArtifactTemplate={ctx.onUseArtifactTemplate}
           onRunShellCommand={ctx.onRunShellCommand}
@@ -224,7 +252,7 @@ function AssistantMessageMeta({
         <AssistantStatusBadge status={projectedItem.item.status} />
       ) : null}
       <AssistantCopyButton
-        message={message}
+        message={ctx.group == null ? message : { ...message, text: withoutCloseLine(message.text) }}
         showCopyButton={showCopyButton}
         streaming={copyStreaming}
       />

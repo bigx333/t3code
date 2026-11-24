@@ -1,4 +1,8 @@
 import { collectComposerModelMentions } from "@t3tools/client-runtime/composer-model-mentions";
+import {
+  groupMentionOccurrences,
+  type ThreadGroup,
+} from "@t3tools/client-runtime/state/thread-group";
 import type { EnvironmentId, ScopedThreadRef, ServerProviderSkill } from "@t3tools/contracts";
 import { formatProviderSkillDisplayName } from "@t3tools/shared/inlineSkills";
 import { T, useGT } from "gt-react";
@@ -10,6 +14,7 @@ import { SKILL_CHIP_ICON_SVG } from "../composerInlineChip";
 import { ContextChipPopover } from "../contextChipParts";
 import { Button } from "../ui/button";
 import { PopoverClose } from "../ui/popover";
+import { GroupMemberChip } from "./GroupMemberChip";
 import { ModelMentionChip } from "./ModelMentionChip";
 
 function SkillInlineText(props: {
@@ -17,6 +22,7 @@ function SkillInlineText(props: {
   skills: ReadonlyArray<ServerProviderSkill>;
   threadRef: ScopedThreadRef | undefined;
   environmentId: EnvironmentId | null;
+  group: ThreadGroup | null;
 }) {
   const chips: Array<{ start: number; end: number; node: ReactNode }> = [];
   for (const { start, end, skill, rawText } of matchInlineSkills(props.text, props.skills)) {
@@ -30,6 +36,27 @@ function SkillInlineText(props: {
           description={skillPopoverDescription(skill)}
           copyMarkdown={rawText}
           onViewInstructions={skillInstructionsOpener(props.threadRef, skill)}
+        />
+      ),
+    });
+  }
+  for (const mention of groupMentionOccurrences(props.text, props.group)) {
+    const member = mention.member;
+    const threadRef = props.threadRef;
+    chips.push({
+      start: mention.start,
+      end: mention.end,
+      node: (
+        <GroupMemberChip
+          key={`${mention.start}:group`}
+          label={mention.label}
+          isPrimary={mention.isPrimary}
+          source={mention.source}
+          onOpenWork={
+            member === "primary" || threadRef === undefined
+              ? undefined
+              : () => useRightPanelStore.getState().openThread(threadRef, member)
+          }
         />
       ),
     });
@@ -74,6 +101,7 @@ export function renderSkillInlineMarkdownChildren(
   skills: ReadonlyArray<ServerProviderSkill>,
   threadRef: ScopedThreadRef | undefined,
   environmentId: EnvironmentId | null,
+  group: ThreadGroup | null,
 ): ReactNode {
   return Children.map(children, (child) => {
     if (typeof child === "string") {
@@ -83,6 +111,7 @@ export function renderSkillInlineMarkdownChildren(
           skills={skills}
           threadRef={threadRef}
           environmentId={environmentId}
+          group={group}
         />
       );
     }
@@ -100,7 +129,14 @@ export function renderSkillInlineMarkdownChildren(
     return cloneElement(
       child,
       undefined,
-      renderSkillInlineMarkdownChildren(child.props.children, skills, threadRef, environmentId),
+      renderSkillInlineMarkdownChildren(
+        child.props.children,
+        skills,
+        threadRef,
+        environmentId,
+        // Routing reads the raw prompt, where `**@astra**` has `*` before the `@` and names nobody.
+        null,
+      ),
     );
   });
 }

@@ -62,6 +62,7 @@ import { vcsEnvironment } from "../../state/vcs";
 import { useChildThreadInputs, readThreadShell, waitForThreadShell } from "../../state/entities";
 import { serverEnvironment } from "../../state/server";
 import { environmentShell } from "../../state/shell";
+import { isSeatedSeatThread } from "@t3tools/client-runtime/state/thread-group";
 import { ThreadStatusLine } from "./ThreadStatusLine";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
@@ -530,7 +531,10 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     });
   };
   const onOpenRelatedThreadStable = useStableCallback(onOpenRelatedThread);
-  const childThreadInputs = useChildThreadInputs(activeThreadRef);
+  // A seat's own row already says it is waiting, and it is not a side chat to the user.
+  const childThreadInputs = useChildThreadInputs(activeThreadRef).filter(
+    (child) => !isSeatedSeatThread(activeThreadShell?.group, child.id),
+  );
   const childInputNow = childInputNowItem(
     {
       childThreadInputs,

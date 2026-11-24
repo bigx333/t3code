@@ -133,6 +133,7 @@ import { AssistantCitationChip } from "./chat/AssistantCitationChip";
 import { ModelMentionChip, modelMentionKey, modelMentionKeysAtom } from "./chat/ModelMentionChip";
 import { getTimelinePageScrollKey } from "./chat/pageScrollController";
 import { ContextChip } from "./ContextChip";
+import { GroupMemberChip } from "./chat/GroupMemberChip";
 import {
   ComposerContextActionsContext,
   ComposerContextReferenceChip,
@@ -300,6 +301,17 @@ function ComposerMentionNodeView({ node }: NodeViewProps) {
   const nativeDrag = useNativeFileDrag(actions.environmentId, () =>
     resolvePathLinkTarget(path, actions.cwd ?? ""),
   );
+  const handle = path.toLowerCase();
+  const member = actions.groupParticipants?.find((participant) =>
+    handle === "primary" ? participant.isPrimary : participant.handle.toLowerCase() === handle,
+  );
+  if (member !== undefined) {
+    return (
+      <NodeViewWrapper as="span" className={CHIP_NODE_SELECTION_CLASS_NAME}>
+        <GroupMemberChip label={member.label} isPrimary={member.isPrimary} />
+      </NodeViewWrapper>
+    );
+  }
   const chip = (
     <ContextChip
       {...nativeDrag}

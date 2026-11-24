@@ -2,6 +2,10 @@ import { m } from "../i18n/messages";
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { msg, T, useGT, useMessages } from "gt-react";
 import { resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
+import {
+  groupMentionOccurrences,
+  type ThreadGroup,
+} from "@t3tools/client-runtime/state/thread-group";
 import { clientHostEnvironmentAtom } from "../state/clientHostEnvironment";
 import { buildFileLinkParentSuffixByPath, fileLinkLabel } from "@t3tools/shared/fileLinks";
 import {
@@ -250,6 +254,7 @@ interface ChatMarkdownProps {
   onTaskListChange?: ((input: { markerOffset: number; checked: boolean }) => void) | undefined;
   isStreaming?: boolean;
   skills?: ReadonlyArray<ServerProviderSkill>;
+  group?: ThreadGroup | null;
   className?: string;
   lineBreaks?: boolean;
   parseRawHtml?: boolean;
@@ -582,6 +587,7 @@ function useChatMarkdownState(
     onTaskListChange,
     isStreaming = false,
     skills = EMPTY_MARKDOWN_SKILLS,
+    group = null,
     onUseArtifactTemplate,
     onRunShellCommand,
     imageBaseDir,
@@ -1117,6 +1123,7 @@ function useChatMarkdownState(
     pullRequestsEnabled,
     issuesEnabled,
     skills,
+    group,
     threadRef,
     updateThreadPullRequestLink,
   };
@@ -1179,10 +1186,10 @@ const CHAT_MARKDOWN_COMPONENTS = {
     return <div {...props}>{children}</div>;
   },
   p: function MarkdownParagraph({ node: _node, children, ...props }) {
-    const { skills, threadRef, environmentId } = use(ChatMarkdownRendererContext);
+    const { skills, threadRef, environmentId, group } = use(ChatMarkdownRendererContext);
     return (
       <p {...props}>
-        {renderSkillInlineMarkdownChildren(children, skills, threadRef, environmentId)}
+        {renderSkillInlineMarkdownChildren(children, skills, threadRef, environmentId, group)}
       </p>
     );
   },
@@ -1223,12 +1230,12 @@ const CHAT_MARKDOWN_COMPONENTS = {
     );
   },
   li: function MarkdownListItem({ node, children, ...props }) {
-    const { skills, threadRef, environmentId } = use(ChatMarkdownRendererContext);
+    const { skills, threadRef, environmentId, group } = use(ChatMarkdownRendererContext);
     // Resolve checkbox markers by offset to avoid rerendering list items on every streamed token.
     const isTaskItem = String(props.className ?? "").includes("task-list-item");
     return (
       <li {...props} data-list-item-offset={isTaskItem ? node?.position?.start.offset : undefined}>
-        {renderSkillInlineMarkdownChildren(children, skills, threadRef, environmentId)}
+        {renderSkillInlineMarkdownChildren(children, skills, threadRef, environmentId, group)}
       </li>
     );
   },
@@ -1930,17 +1937,22 @@ function hastClassName(node: HastElement): string | undefined {
   return Array.isArray(className) ? className.join(" ") : (className as string | undefined);
 }
 
-// Paragraphs and list items turn skill and model mentions in their text into chips, except in
-// code and links, as SkillInlineText does.
-function hastTextHasChip(node: HastElement, skills: ReadonlyArray<ServerProviderSkill>): boolean {
+// Paragraphs and list items turn skill, model, and group mentions into chips, except in code
+// and links, as SkillInlineText does.
+function hastTextHasChip(
+  node: HastElement,
+  skills: ReadonlyArray<ServerProviderSkill>,
+  group: ThreadGroup | null,
+): boolean {
   return node.children.some((child) =>
     child.type === "text"
       ? (skills.length > 0 && !matchInlineSkills(child.value, skills).next().done) ||
-        collectComposerModelMentions(child.value).length > 0
+        collectComposerModelMentions(child.value).length > 0 ||
+        groupMentionOccurrences(child.value, group).length > 0
       : child.type === "element" &&
         child.tagName !== "code" &&
         child.tagName !== "a" &&
-        hastTextHasChip(child, skills),
+        hastTextHasChip(child, skills, group),
   );
 }
 
@@ -1962,6 +1974,7 @@ function markdownIslandOptions(state: ChatMarkdownComponentState): MarkdownIslan
     inlineCodeFileLinkMetaByText,
     onTaskListChange,
     skills,
+    group,
   } = state;
   const options: MarkdownIslandOptions = {
     components: CHAT_MARKDOWN_COMPONENTS,
@@ -1990,7 +2003,7 @@ function markdownIslandOptions(state: ChatMarkdownComponentState): MarkdownIslan
         }
         case "p":
         case "li":
-          return hastTextHasChip(node, skills);
+          return hastTextHasChip(node, skills, group);
         default:
           return false;
       }

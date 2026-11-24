@@ -1,6 +1,7 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { sideThreadKindOf } from "@t3tools/client-runtime/side-thread";
 import { formatSubagentDisplayTitle } from "@t3tools/client-runtime/state/subagent-display";
+import { isSeatedSeatThread } from "@t3tools/client-runtime/state/thread-group";
 import {
   isAtomCommandInterrupted,
   settlePromise,
@@ -75,6 +76,12 @@ export default function SideThreadPane(props: {
   });
   const projection = useQuietThreadProjection(threadRef)?.projection;
   const thread = shell ?? projection?.thread ?? null;
+  const parent = useQuietThreadShell(
+    thread?.lineage.parentThreadId
+      ? scopeThreadRef(parentRef.environmentId, thread.lineage.parentThreadId)
+      : parentRef,
+  );
+  const seated = isSeatedSeatThread(parent?.source.group, threadId);
   // A tab opens for side chats and subagents only, so an unloaded one is still one of them.
   const kind = sideThreadKindOf(thread) ?? "subagent";
   const isSideChat = kind === "side-chat";
@@ -83,7 +90,7 @@ export default function SideThreadPane(props: {
   const confirmThreadDelete = useClientSettings((settings) => settings.confirmThreadDelete);
   const [deleting, setDeleting] = useState(false);
   // Closing an unused side chat deletes it, which would leave the link unreadable.
-  const canAddToChat = shell !== null && shell.latestUserMessageAt !== null;
+  const canAddToChat = !seated && shell !== null && shell.latestUserMessageAt !== null;
   const addToChat = () => {
     if (!canAddToChat) return;
     useComposerDraftStore
@@ -147,25 +154,27 @@ export default function SideThreadPane(props: {
       {isSideChat ? (
         <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border pr-1 pl-3">
           <h2 className="min-w-0 flex-1 truncate text-xs font-medium">{title}</h2>
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  variant="ghost"
-                  size="xs"
-                  aria-disabled={!canAddToChat || undefined}
-                  onClick={addToChat}
-                >
-                  <T>Add to chat</T>
-                </Button>
-              }
-            />
-            <TooltipPopup side="bottom">
-              {canAddToChat
-                ? gt("Adds this side chat to the main thread's next message.")
-                : gt("Available after the first message.")}
-            </TooltipPopup>
-          </Tooltip>
+          {seated ? null : (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    aria-disabled={!canAddToChat || undefined}
+                    onClick={addToChat}
+                  >
+                    <T>Add to chat</T>
+                  </Button>
+                }
+              />
+              <TooltipPopup side="bottom">
+                {canAddToChat
+                  ? gt("Adds this side chat to the main thread's next message.")
+                  : gt("Available after the first message.")}
+              </TooltipPopup>
+            </Tooltip>
+          )}
           <Button
             variant="ghost"
             size="icon-xs"
@@ -200,6 +209,7 @@ export default function SideThreadPane(props: {
               environmentId={parentRef.environmentId}
               threadId={threadId}
               routeKind="server"
+              composerHidden={seated}
               embedded={props.parentPanel}
             />
           </ComposerHandleContext>

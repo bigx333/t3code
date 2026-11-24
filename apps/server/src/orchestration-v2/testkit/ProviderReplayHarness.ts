@@ -294,6 +294,7 @@ export function layerWithRegistry<Error>(
     readonly runContinuationWorker?: boolean;
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
+    readonly settings?: Parameters<typeof ServerSettings.layerTest>[0];
     /** Lets a test hold a projection read open to order concurrent dispatches. */
     readonly wrapProjectionStore?: (
       store: ProjectionStore.ProjectionStoreV2Shape,
@@ -357,6 +358,7 @@ export function layerWithRegistry<Error>(
           ...(options.continueThreadsAfterServerUpdate === undefined
             ? {}
             : { continueThreadsAfterServerUpdate: options.continueThreadsAfterServerUpdate }),
+          ...options.settings,
         },
         policy.summary,
       ),

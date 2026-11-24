@@ -1626,6 +1626,7 @@ export function deriveMessagesTimelineRows(
     supportsConversationRollback: boolean;
     threadStartCheckpointAvailable?: boolean;
     availableRevertTurnCounts?: ReadonlySet<number> | undefined;
+    publicationRunIds?: ReadonlySet<RunId> | undefined;
     worktreeSetup?: WorktreeSetupSnapshot | null;
     toolCallVisibility?: ToolCallVisibility;
     revealedMessageId?: MessageId | null;
@@ -1654,6 +1655,7 @@ export function deriveMessagesTimelineRows(
         threadStartCheckpointAvailable: input.threadStartCheckpointAvailable === true,
         unsettledRunId,
         availableRevertTurnCounts: input.availableRevertTurnCounts,
+        publicationRunIds: input.publicationRunIds,
       })
     : new Map<MessageId, number>();
   const nextRows: MessagesTimelineRow[] = [];
@@ -2569,6 +2571,7 @@ function replaceStreamingMessageRows(
     expandedWorkGroupIds: previousExpandedGroups,
     pendingApprovalRequestIds: previousPendingApprovalRequestIds,
     availableRevertTurnCounts: previousAvailableRevertTurnCounts,
+    publicationRunIds: previousPublicationRunIds,
     ...previousContext
   } = previous.input;
   const {
@@ -2580,6 +2583,7 @@ function replaceStreamingMessageRows(
     expandedWorkGroupIds,
     pendingApprovalRequestIds,
     availableRevertTurnCounts,
+    publicationRunIds,
     ...context
   } = input;
   // Shell/checkpoint selectors rebuild summaries per event; compare contents.
@@ -2592,6 +2596,7 @@ function replaceStreamingMessageRows(
     !shallow(previousExpandedGroups, expandedWorkGroupIds) ||
     !shallow(previousPendingApprovalRequestIds, pendingApprovalRequestIds) ||
     !shallow(previousAvailableRevertTurnCounts, availableRevertTurnCounts) ||
+    !shallow(previousPublicationRunIds, publicationRunIds) ||
     !sameCheckpointSummaries(previousCheckpoints, turnDiffSummaries)
   ) {
     return null;

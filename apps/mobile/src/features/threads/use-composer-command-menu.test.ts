@@ -64,6 +64,17 @@ describe("resolveComposerMenuSelection", () => {
 });
 
 describe("mobile slash commands", () => {
+  it.each([false, true])("offers /invite only when invitations are available (%s)", (available) => {
+    const items = buildComposerSlashCommandItems({
+      query: "invite",
+      atMessageStart: true,
+      hasThread: true,
+      offersGroupInvite: available,
+      selectedProviderStatus: null,
+    });
+    expect(items.map((item) => item.id)).toEqual(available ? ["cmd:invite"] : []);
+  });
+
   it("keeps a provider's native /plan", () => {
     const items = buildComposerSlashCommandItems({
       query: "pl",
@@ -141,6 +152,22 @@ describe("mobile model mentions", () => {
       ...overrides,
     };
   };
+
+  it("addresses a group member with its unique handle", () => {
+    expect(
+      resolveComposerCommandSelection({
+        draftMessage: "Ask @as",
+        trigger: { rangeStart: 4, rangeEnd: 7 },
+        item: {
+          id: "group:astra",
+          type: "group-member",
+          handle: "astra-2",
+          label: "@astra-2",
+          description: "Astra",
+        },
+      }),
+    ).toEqual({ text: "Ask @astra-2 ", cursor: 13 });
+  });
 
   it("offers current, visible models labelled with their provider", () => {
     const items = buildComposerModelItems(

@@ -10,6 +10,7 @@ import type { ComposerEditorProps } from "./T3ComposerEditor.types";
 export function ComposerEditor({
   ref,
   skills: _skills,
+  group: _group,
   selection,
   onPasteImages,
   onPasteImagesPending: _onPasteImagesPending,

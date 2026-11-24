@@ -1,5 +1,6 @@
 import {
   isCompactionCommandMessage,
+  isOrchestrationV2PublicationRun,
   type ModelSelection,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2TurnItem,
@@ -46,6 +47,8 @@ export function modelSwitchSince(
   );
   let previous: ModelSwitchRun | undefined;
   for (const run of projection.runs) {
+    // Peers speak with their own models; the thread's model did not change.
+    if (isOrchestrationV2PublicationRun(run)) continue;
     // A wake shows as a notification, but its context handoff row still shows the swap.
     if (!anchorsModelSwitch(run, shown)) continue;
     if (previous === undefined || runRanAfter(run, previous)) previous = run;

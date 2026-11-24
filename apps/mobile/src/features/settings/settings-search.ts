@@ -163,6 +163,8 @@ const SETTINGS_SEARCH_TERMS = {
     msg("skills library", { $context: "settings search keyword" }),
     msg("shared skills", { $context: "settings search keyword" }),
     msg("agent feedback", { $context: "settings search keyword" }),
+    msg("group conversations", { $context: "settings search keyword" }),
+    msg("invite models", { $context: "settings search keyword" }),
   ],
   SettingsEnvironmentMaintenance: [
     msg("updates", { $context: "settings search keyword" }),

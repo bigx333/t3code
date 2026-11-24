@@ -1,3 +1,5 @@
+import { isGroupActive } from "@t3tools/client-runtime/state/thread-group";
+import { orchestrationEnvironment } from "../../state/orchestration";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
 import type { ComposerTextPaste } from "../../native/T3ComposerEditor.types";
@@ -422,6 +424,9 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     undefined,
     props.selectedThread.projectId,
   );
+  const canInviteToGroup = useAtomValue(
+    orchestrationEnvironment.inviteToGroup.permissionAtom(props.environmentId),
+  );
   const composerMenu = useComposerCommandMenu({
     draftMessage: draftMessage,
     ownerKey: composerDraftKey,
@@ -447,8 +452,21 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     onOpenModelPicker: settingsSheetPresentation.open,
     modelOptions: mentionModelOptions,
     modelProviders: props.serverConfig?.providers,
+    group: props.selectedThread.group,
     ...(props.onFreshSession === undefined ? {} : { onFreshSession: props.onFreshSession }),
     offersSideChat: props.offersSideChat === true,
+    onGroupInvite:
+      !props.isDraft &&
+      props.selectedThread.lineage.sideChat !== true &&
+      props.selectedThread.lineage.relationshipToParent !== "subagent" &&
+      canInviteToGroup &&
+      props.serverConfig?.settings.groupConversationsEnabled === true
+        ? () =>
+            navigation.navigate("ThreadGroupInvite", {
+              environmentId: props.environmentId,
+              threadId: props.selectedThread.id,
+            })
+        : undefined,
   });
   const voiceInput = useVoiceInputController({
     ownerKey: composerDraftKey,
@@ -899,6 +917,9 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                   // The save uses a draft snapshot; further typing would be discarded on success.
                   readOnly={isSubmissionLocked}
                   skills={composerMenu.skills}
+                  group={
+                    isGroupActive(props.selectedThread.group) ? props.selectedThread.group : null
+                  }
                   selection={composerMenu.selection}
                   onChangeText={(text) => {
                     if (!isSubmissionLocked) props.onChangeDraftMessage(text);

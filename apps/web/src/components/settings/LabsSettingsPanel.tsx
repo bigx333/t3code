@@ -39,6 +39,7 @@ export function LabsSettingsPanel() {
         {hasCloudPublicConfig() ? <GuestLinksRowWithSignIn /> : <GuestLinksRow />}
         <LinkedEnvironmentsRow />
         <WorkflowsRow />
+        <GroupConversationsRow />
         <PromptSuggestionsRow />
         <SimlockHostsRow />
         <FastWorktreeCheckoutRow />
@@ -223,6 +224,33 @@ function WorkflowsRow() {
           checked={settings.workflowsEnabled}
           onCheckedChange={(checked) => updateSettings({ workflowsEnabled: Boolean(checked) })}
           aria-label={gt("Workflows")}
+        />
+      }
+    />
+  );
+}
+
+function GroupConversationsRow() {
+  const searchableSetting = useSearchableSetting();
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  const gt = useGT();
+  return (
+    <SettingsRow
+      serverScoped
+      {...searchableSetting("group-conversations-beta")}
+      settingKeys={["groupConversationsEnabled"]}
+      description={gt(
+        "Invite models from any provider into one thread. Talk to all of them or one with @, and let them answer each other. Off stops new invites; a running group keeps its End and Remove controls.",
+      )}
+      control={
+        <ScopedSwitch
+          settingKeys={["groupConversationsEnabled"]}
+          checked={settings.groupConversationsEnabled}
+          onCheckedChange={(checked) =>
+            updateSettings({ groupConversationsEnabled: Boolean(checked) })
+          }
+          aria-label={gt("Group conversations")}
         />
       }
     />

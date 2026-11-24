@@ -91,6 +91,9 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   // The server runs this file: saving it is running code there, as a terminal does.
   [WS_METHODS.workflowsSaveDefinition]: AuthTerminalOperateScope,
   [WS_METHODS.workflowsDeleteDefinition]: AuthTerminalOperateScope,
+  [ORCHESTRATION_V2_WS_METHODS.threadGroupInvite]: AuthOrchestrationOperateScope,
+  [ORCHESTRATION_V2_WS_METHODS.threadGroupRemove]: AuthOrchestrationOperateScope,
+  [ORCHESTRATION_V2_WS_METHODS.threadGroupEnd]: AuthOrchestrationOperateScope,
   // Force stop kills agent processes, as Stop on a terminal does.
   [ORCHESTRATION_V2_WS_METHODS.forceStopThread]: AuthOrchestrationOperateScope,
   // A guest link hands thread access to someone outside, like a pairing link.

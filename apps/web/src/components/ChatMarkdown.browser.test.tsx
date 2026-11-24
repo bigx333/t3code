@@ -754,6 +754,60 @@ describe("ChatMarkdown skill chips", () => {
       "Run $review with model:codex/gpt-6.1 now",
     );
   });
+
+  it("opens a mentioned peer's work in the thread's environment and copies its handle", async () => {
+    setup();
+    const threadRef = {
+      environmentId: EnvironmentId.make("group-workspace"),
+      threadId: ThreadId.make("group-thread"),
+    };
+    const peerId = ThreadId.make("astra-thread");
+    const previous = useRightPanelStore.getState();
+    using restore = new DisposableStack();
+    restore.defer(() => useRightPanelStore.setState(previous, true));
+    useRightPanelStore.setState(useRightPanelStore.getInitialState(), true);
+    await using screen = await renderText("Ask @astra, then @primary.", {
+      threadRef,
+      group: {
+        status: "active",
+        primary: { model: "fable-5", label: "Fable", handle: "fable" },
+        seats: [
+          {
+            threadId: peerId,
+            handle: "astra",
+            label: "Astra",
+            status: "seated",
+            joinedAfterRun: 0,
+          },
+        ],
+        discussion: null,
+        closedBecause: null,
+        closedAt: null,
+      },
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "Group member Astra" }));
+    expect(
+      selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, threadRef),
+    ).toMatchObject({ kind: "thread", threadId: peerId });
+    expect(
+      selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, {
+        ...threadRef,
+        environmentId: EnvironmentId.make("other-workspace"),
+      }),
+    ).toBeNull();
+    expect(buttonsLabelled(screen.container, "Primary Fable")).toEqual([]);
+
+    const paragraph = screen.container.querySelector("p")!;
+    window.getSelection()!.selectAllChildren(paragraph);
+    const copy = new ClipboardEvent("copy", {
+      bubbles: true,
+      cancelable: true,
+      clipboardData: new DataTransfer(),
+    });
+    paragraph.dispatchEvent(copy);
+    expect(copy.clipboardData!.getData("text/plain")).toBe("Ask @astra, then @primary.");
+  });
 });
 
 describe("ChatMarkdown headings", () => {

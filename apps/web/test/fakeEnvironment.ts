@@ -28,6 +28,7 @@ import {
   type OrchestrationV2ProjectedTurnItem,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2Run,
+  type OrchestrationV2ThreadGroup,
   type OrchestrationV2ShellStreamItem,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadShell,
@@ -236,6 +237,7 @@ export interface FakeThread {
   readonly providerSubagentOf?: ThreadId;
   /** Makes this an older settled thread the shell leaves out; only its family read returns it. */
   readonly olderSettled?: true;
+  readonly group?: OrchestrationV2ThreadGroup;
   readonly id: ThreadId;
   readonly title: string;
   /** Defaults to GPT-5.4 on Codex. */
@@ -347,6 +349,7 @@ function shellOf(thread: FakeThread): OrchestrationV2ThreadShell {
     // Idle reads as waiting on the user, which shows a per-second duration in the sidebar.
     status: latest ? "completed" : "idle",
     pendingRuntimeRequest: null,
+    ...(thread.group === undefined ? {} : { group: thread.group }),
     latestVisibleMessage: null,
     latestUserMessageAt: AT,
     hasActionableProposedPlan: false,
@@ -386,6 +389,7 @@ function projectionOf(thread: FakeThread): OrchestrationV2ThreadProjection {
       worktreePath: shell.worktreePath,
       activeProviderThreadId: shell.activeProviderThreadId,
       lineage: shell.lineage,
+      ...(thread.group === undefined ? {} : { group: thread.group }),
       forkedFrom: null,
       createdBy: shell.createdBy,
       creationSource: shell.creationSource,

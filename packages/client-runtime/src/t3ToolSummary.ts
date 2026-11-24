@@ -986,6 +986,23 @@ export function summarizeT3ToolCalls(
           );
       break;
     }
+    case "thread-group": {
+      const count = selected.length;
+      label = done
+        ? resolve(
+            msg(
+              "{count, plural, one {Updated a thread group {count} time} other {Updated a thread group {count} times}}",
+              { count },
+            ),
+          )
+        : resolve(
+            msg(
+              "{count, plural, one {Tried to update a thread group {count} time} other {Tried to update a thread group {count} times}}",
+              { count },
+            ),
+          );
+      break;
+    }
     case "thread-organize": {
       const count = selected.length;
       label = done

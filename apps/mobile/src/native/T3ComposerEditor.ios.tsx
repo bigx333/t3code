@@ -145,6 +145,7 @@ export function ComposerEditor({
   ref,
   skills = EMPTY_SKILLS,
   models = EMPTY_MODELS,
+  group,
   selection,
   style,
   textStyle,
@@ -193,45 +194,54 @@ export function ComposerEditor({
   const chipTextColor = createNativeComposerTheme(theme).text;
   const tokensJson = useMemo(() => {
     return JSON.stringify(
-      composerContextEditorTokens(props.value, tokens, skillLabels, modelTokens).map((token) => {
-        const model = token.type === "model" ? modelsBySource.get(token.source) : undefined;
-        const record =
-          token.type === "context"
-            ? props.context?.records.find((record) => record.contextId === token.contextId)
-            : undefined;
-        const presentation = contextChipPresentation(
-          token.type === "context" ? token.kind : token.type,
-          record,
-        );
-        const icon = contextChipIcon(
-          presentation,
-          token.type === "mention" ? token.value : contextRecordFileName(record),
-        );
-        return {
-          type: token.type === "citation" ? "context" : token.type,
-          source: token.source,
-          start: token.start,
-          end: token.end,
-          accent: contextChipAccent(
-            model ? modelChipIcon(model).accent : presentation.accent,
-            theme,
-            chipTextColor,
-          ),
-          label:
-            token.type === "skill"
-              ? (skillLabels.get(token.value) ?? token.value)
-              : model
-                ? model.label
-                : token.type === "context"
-                  ? `${token.label}${props.context?.records.some((record) => record.contextId === token.contextId) ? "" : " · unavailable"}`
-                  : token.type === "citation"
-                    ? token.value
-                    : basename(token.value).normalize("NFC"),
-          detail: token.type === "context" ? composerChipSizeSuffix(record) : "",
-          iconUri: model ? modelChipIconUri(model) : contextChipIconUri(icon),
-          tintsIcon: model ? modelChipIcon(model).tintsIcon : icon.kind === "chip",
-        };
-      }),
+      composerContextEditorTokens(props.value, tokens, skillLabels, modelTokens, group).map(
+        (token) => {
+          const model = token.type === "model" ? modelsBySource.get(token.source) : undefined;
+          const record =
+            token.type === "context"
+              ? props.context?.records.find((record) => record.contextId === token.contextId)
+              : undefined;
+          const presentation = contextChipPresentation(
+            token.type === "context" ? token.kind : token.type,
+            record,
+          );
+          const icon = contextChipIcon(
+            presentation,
+            token.type === "mention" ? token.value : contextRecordFileName(record),
+          );
+          return {
+            type:
+              token.type === "citation"
+                ? "context"
+                : token.type === "group"
+                  ? "mention"
+                  : token.type,
+            source: token.source,
+            start: token.start,
+            end: token.end,
+            accent: contextChipAccent(
+              model ? modelChipIcon(model).accent : presentation.accent,
+              theme,
+              chipTextColor,
+            ),
+            label:
+              token.type === "group"
+                ? token.label
+                : token.type === "skill"
+                  ? (skillLabels.get(token.value) ?? token.value)
+                  : model
+                    ? model.label
+                    : token.type === "context"
+                      ? `${token.label}${props.context?.records.some((record) => record.contextId === token.contextId) ? "" : " · unavailable"}`
+                      : token.type === "citation"
+                        ? token.value
+                        : basename(token.value).normalize("NFC"),
+            detail: token.type === "context" ? composerChipSizeSuffix(record) : "",
+            iconUri: model ? modelChipIconUri(model) : contextChipIconUri(icon),
+            tintsIcon: model ? modelChipIcon(model).tintsIcon : icon.kind === "chip",
+          };
+        },
+      ),
     );
   }, [
     props.value,
@@ -240,6 +250,7 @@ export function ComposerEditor({
     skillLabels,
     modelsBySource,
     modelTokens,
+    group,
     theme,
     chipTextColor,
   ]);

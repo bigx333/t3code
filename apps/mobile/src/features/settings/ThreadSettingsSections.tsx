@@ -58,6 +58,12 @@ export function SettingsLabsRouteScreen() {
           )}
         />
         <MachineBetaSection
+          title={gt("Group conversations")}
+          icon="person.2"
+          setting="groupConversationsEnabled"
+          description={gt("Invite models into one thread. Everyone can edit the shared workspace.")}
+        />
+        <MachineBetaSection
           title={gt("Fast worktree checkout")}
           icon="bolt.circle"
           capability="fastWorktreeCheckout"
@@ -267,7 +273,10 @@ export function NewThreadSettingsSection() {
   );
 }
 
-type MachineBetaSetting = "linkedEnvironmentsEnabled" | "fastWorktreeCheckout";
+type MachineBetaSetting =
+  | "linkedEnvironmentsEnabled"
+  | "fastWorktreeCheckout"
+  | "groupConversationsEnabled";
 
 const AGENT_FEEDBACK_CHOICES: ReadonlyArray<{
   readonly mode: AgentFeedbackMode;
@@ -434,7 +443,8 @@ function MachineBetaSection({
 }: {
   readonly title: string;
   readonly icon: ComponentProps<typeof SettingsSwitchRow>["icon"];
-  readonly capability: "peerLinks" | "fastWorktreeCheckout";
+  /** Absent when every connected machine offers the beta. */
+  readonly capability?: "peerLinks" | "fastWorktreeCheckout";
   readonly setting: MachineBetaSetting;
   readonly description: string;
 }) {
@@ -443,7 +453,9 @@ function MachineBetaSection({
   const supported = environments.filter(
     (environment) =>
       environment.connection.phase === "connected" &&
-      environment.serverConfig?.environment.capabilities[capability] === true,
+      (capability === undefined
+        ? environment.serverConfig != null
+        : environment.serverConfig?.environment.capabilities[capability] === true),
   );
   const writable = useEnvironmentsWithScope(supported, AuthSettingsWriteScope);
   const updateSettings = useAtomCommand(serverEnvironment.updateSettings, {
@@ -478,7 +490,9 @@ function MachineBetaSection({
                     patch:
                       setting === "linkedEnvironmentsEnabled"
                         ? { linkedEnvironmentsEnabled: value }
-                        : { fastWorktreeCheckout: value },
+                        : setting === "groupConversationsEnabled"
+                          ? { groupConversationsEnabled: value }
+                          : { fastWorktreeCheckout: value },
                   },
                 })
               }

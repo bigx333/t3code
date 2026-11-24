@@ -1,3 +1,4 @@
+import { groupAudienceForPrompt } from "@t3tools/client-runtime/state/thread-group";
 import { useComposerAttachmentActions } from "./use-composer-attachment-actions";
 import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import * as Effect from "effect/Effect";
@@ -451,7 +452,8 @@ export function useThreadComposerState(input: {
     ? deriveProviderSubagentStatus(selectedThreadProjection.projection)
     : null;
 
-  const activeThreadBusy = threadRuntimeIsActive(selectedThreadRuntime);
+  const groupDiscussionOpen = selectedThreadShell?.groupDiscussionOpen === true;
+  const activeThreadBusy = groupDiscussionOpen || threadRuntimeIsActive(selectedThreadRuntime);
   const resumeCompactionTokens = (selection: ModelSelection | null, text: string, now: string) =>
     selectedEnvironmentRuntime?.connectionState === "connected" &&
     selectedThreadProjection !== null &&
@@ -898,6 +900,7 @@ export function useThreadComposerState(input: {
       messageId,
       commandId: CommandId.make(metadata.commandId),
       text,
+      groupAudience: groupAudienceForPrompt(selectedThreadShell.group, text),
       attachments,
       context: draft.context,
       modelSelection,

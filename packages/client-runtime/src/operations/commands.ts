@@ -6,6 +6,7 @@ import {
   CommandId,
   CheckpointId,
   CheckpointScopeId,
+  isOrchestrationV2PublicationRun,
   ORCHESTRATION_V2_WS_METHODS,
   OrchestrationV2CheckpointUnavailableError,
   WS_METHODS,
@@ -211,6 +212,11 @@ export interface StartThreadTurnInput extends ThreadCommandInput {
   readonly freshContext?: boolean;
   /** Defaults to true. Callers with their own retry queue opt out so a dead socket fails fast. */
   readonly resendAfterSocketLoss?: boolean;
+  /** Who a message reaches while a group is active. Absent means everyone. */
+  readonly groupAudience?: Extract<
+    OrchestrationV2Command,
+    { type: "message.dispatch" }
+  >["groupAudience"];
 }
 
 export interface InterruptThreadTurnInput extends ThreadCommandInput {
@@ -875,6 +881,7 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
           ? {}
           : { sourcePlanRef: input.sourceProposedPlan }),
         ...(input.freshContext ? { freshContext: true } : {}),
+        ...(input.groupAudience === undefined ? {} : { groupAudience: input.groupAudience }),
         dispatchMode: { type: "start_immediately" },
       },
       resend,
@@ -905,6 +912,7 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
         ? {}
         : { sourcePlanRef: input.sourceProposedPlan }),
       ...(input.freshContext ? { freshContext: true } : {}),
+      ...(input.groupAudience === undefined ? {} : { groupAudience: input.groupAudience }),
       ...(requestedMode !== "queue" ? { deliveryIntent: requestedMode } : {}),
       dispatchMode,
     },
@@ -967,7 +975,7 @@ export const interruptThreadTurn = Effect.fn("EnvironmentCommands.interruptThrea
         run.status === "waiting",
     )?.id;
     if (runId === undefined) {
-      const latestRun = projection.runs.at(-1);
+      const latestRun = projection.runs.findLast((run) => !isOrchestrationV2PublicationRun(run));
       if (
         derivePendingBackgroundWork({
           latestRun,

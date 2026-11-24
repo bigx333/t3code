@@ -53,6 +53,7 @@ import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts"
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import { canForkBusySourceNatively, isActiveRun } from "./CommandPolicy.ts";
 import { contextBoundaryOrdinal, isScheduledFreshRun } from "./contextBoundary.ts";
+import { groupParticipants, renderPrimaryGroupNote } from "./GroupPrompt.ts";
 import {
   DEFAULT_HANDOFF_TOKEN_CAP,
   handoffTokenCapConfig,
@@ -1104,6 +1105,21 @@ export const layer: Layer.Layer<
       ]
         .filter((part) => part !== "")
         .join("\n\n");
+      const { group } = projection.thread;
+      const groupOthers = group == null ? [] : groupParticipants(group).slice(1);
+      // A wake turn has its own prompt, and maintenance commands go to the provider bare.
+      const groupNote =
+        group?.status !== "active" ||
+        groupOthers.length === 0 ||
+        message.createdBy !== "user" ||
+        slashCommand
+          ? ""
+          : renderPrimaryGroupNote({
+              self: group.primary,
+              others: groupOthers,
+              everyoneAddressed: group.discussion?.mode === "everyone",
+            });
+      const turnNotes = [restartNote, groupNote].filter((note) => note !== "").join("\n\n");
       const tokenCap = yield* handoffTokenCapConfig.pipe(
         Effect.orElseSucceed(() => DEFAULT_HANDOFF_TOKEN_CAP),
       );
@@ -1253,7 +1269,7 @@ export const layer: Layer.Layer<
             return handoffBudget({
               tokenCap,
               modelContextWindow,
-              userText: restartNote === "" ? userText : `${restartNote}\n\n${userText}`,
+              userText: turnNotes === "" ? userText : `${turnNotes}\n\n${userText}`,
               attachments: providerMessage.attachments,
               providerThread: budgetProviderThread,
               nativeContextEstimate:
@@ -1926,7 +1942,7 @@ export const layer: Layer.Layer<
         retryHandoff.handoffs.length > 0 ||
         retryHandoff.attachments.length > 0 ||
         sideChatHandoff !== undefined ||
-        restartNote !== "" ||
+        turnNotes !== "" ||
         noteContinuation;
       // Pending context turns the resume into a prompted turn, which needs no native resume.
       if (
@@ -2153,7 +2169,7 @@ export const layer: Layer.Layer<
             ),
             ...(sideChatContext === "" || sideChatHandoff === undefined ? [] : [sideChatHandoff]),
           ];
-          const context = [delivery.context, sideChatContext, restartNote]
+          const context = [delivery.context, sideChatContext, turnNotes]
             .filter((part) => part !== "")
             .join("\n\n");
           const { restartContinuationOfRunId: _resumedRunId, ...promptedInput } = turnInput;

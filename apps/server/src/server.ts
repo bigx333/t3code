@@ -13,6 +13,7 @@ import * as PullRequestWatchReactor from "./orchestration-v2/PullRequestWatchRea
 import * as DelegatedTaskQuestionReactor from "./orchestration-v2/DelegatedTaskQuestionReactor.ts";
 import * as MilestoneHub from "./milestones/MilestoneHub.ts";
 import * as OrchestrationMilestones from "./milestones/OrchestrationMilestones.ts";
+import * as GroupReactor from "./orchestration-v2/GroupReactor.ts";
 // Effect wraps this raw Node HTTP server after its startup and write-error guards attach.
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeHttp from "node:http";
@@ -778,6 +779,12 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
       yield* (yield* OrchestrationMilestones.OrchestrationMilestones).start();
     }),
   ).pipe(Layer.provide(OrchestrationMilestones.layer), Layer.provide(ProjectionStoreV2.layer)),
+  Layer.effectDiscard(
+    Effect.gen(function* () {
+      const service = yield* GroupReactor.GroupReactor;
+      yield* service.start();
+    }),
+  ).pipe(Layer.provide(GroupReactor.layer), Layer.provide(ProjectionStoreV2.layer)),
   ProviderUsageLimitsIngestion.layer,
   layerProviderInstallationRefresh,
   ProviderInstallation.layer,

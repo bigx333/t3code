@@ -567,6 +567,17 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("beta workflow durable runs automation steps schedule webhook folder")],
   },
   {
+    id: "group-conversations-beta",
+    title: msg("Group conversations"),
+    to: "/settings/labs",
+    scope: "environment",
+    searchTerms: [
+      msg(
+        "beta invite models multiple providers peers seats talk each other discuss roster @ chat together",
+      ),
+    ],
+  },
+  {
     id: "prompt-suggestions-beta",
     title: msg("Suggest next prompt"),
     to: "/settings/labs",

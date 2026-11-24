@@ -15,6 +15,7 @@ import {
   MessageId,
   ModelSelection,
   OrchestrationMessageContext,
+  OrchestrationV2ThreadGroupMember,
   ProjectId,
   ProviderInteractionMode,
   RuntimeMode,
@@ -60,6 +61,9 @@ export const QueuedThreadMessageSchema = Schema.Struct({
   text: Schema.String,
   restoreToDraft: Schema.optional(Schema.Boolean),
   context: Schema.optional(OrchestrationMessageContext),
+  groupAudience: Schema.optional(
+    Schema.Union([Schema.Literal("everyone"), Schema.Array(OrchestrationV2ThreadGroupMember)]),
+  ),
   attachments: Schema.Array(DraftComposerAttachmentSchema),
   modelSelection: Schema.optional(ModelSelection),
   dispatchMode: Schema.optional(Schema.Literals(["auto", "queue", "steer", "restart"])),
@@ -97,6 +101,7 @@ export interface QueuedThreadMessage {
   readonly text: string;
   readonly restoreToDraft?: boolean;
   readonly context?: OrchestrationMessageContext;
+  readonly groupAudience?: "everyone" | ReadonlyArray<OrchestrationV2ThreadGroupMember>;
   readonly attachments: ReadonlyArray<DraftComposerAttachment>;
   readonly modelSelection?: ModelSelectionType;
   readonly runtimeMode?: RuntimeModeType;

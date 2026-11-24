@@ -1,4 +1,5 @@
 import { LegendList, type LegendListRef } from "@legendapp/list/react-native";
+import { orchestrationEnvironment } from "../../state/orchestration";
 import { useAtomValue } from "@effect/atom-react";
 import { uuidv4 } from "../../lib/uuid";
 import { useNavigation } from "@react-navigation/native";
@@ -103,6 +104,7 @@ const ACTION_ICONS: Record<string, AppSymbolName> = {
   terminal: "terminal",
   review: PullRequestGlyph.pullRequest,
   copyThreadReference: "link",
+  inviteToGroup: "person.2",
 };
 
 function itemIcon(item: CommandPaletteItem): AppSymbolName {
@@ -276,6 +278,14 @@ export function CommandPalette(props: {
     environmentLabels === undefined ? {} : { environmentLabels },
   );
   const serverConfigs = useServerConfigs();
+  const canInviteToGroup =
+    useAtomValue(
+      orchestrationEnvironment.inviteToGroup.permissionAtom(activeThreadRef?.environmentId ?? null),
+    ) &&
+    activeThread != null &&
+    activeThread.lineage.sideChat !== true &&
+    activeThread.lineage.relationshipToParent !== "subagent" &&
+    serverConfigs.get(activeThread.environmentId)?.settings.groupConversationsEnabled === true;
   const startTriage = useStartTriage();
   const newTaskFlow = useNewTaskFlow();
   const draftEnvironmentId =
@@ -356,6 +366,19 @@ export function CommandPalette(props: {
         run: () => openSettings(navigation, "SettingsArchive"),
       },
     ];
+    if (canInviteToGroup && activeThread) {
+      actions.push({
+        key: "inviteToGroup",
+        kind: "action",
+        title: gt("Invite a model"),
+        searchTerms: ["invite", "model", "group", "peer", "add", "provider"],
+        run: () =>
+          navigation.navigate("ThreadGroupInvite", {
+            environmentId: activeThread.environmentId,
+            threadId: activeThread.id,
+          }),
+      });
+    }
     if (canTriage) {
       const triageEnvironmentLabel = savedConnectionsById[triageEnvironmentId]?.environmentLabel;
       actions.push({
@@ -500,6 +523,7 @@ export function CommandPalette(props: {
     environments.length,
     canTriage,
     canShareWithGuest,
+    canInviteToGroup,
     navigation,
     projects,
     runCommand,

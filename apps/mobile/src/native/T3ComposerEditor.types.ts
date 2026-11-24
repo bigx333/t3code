@@ -1,4 +1,5 @@
 import type { SelectableMarkdownModel } from "./SelectableMarkdownText.types";
+import type { ThreadGroup } from "@t3tools/client-runtime/state/thread-group";
 import type { OrchestrationMessageContext, ServerProviderSkill } from "@t3tools/contracts";
 import type { Ref } from "react";
 import type { StyleProp, TextStyle, ViewStyle } from "react-native";
@@ -45,6 +46,7 @@ export interface ComposerEditorProps {
     > &
       Partial<Pick<ServerProviderSkill, "path">>
   >;
+  readonly group?: ThreadGroup | null;
   readonly models?: ReadonlyArray<SelectableMarkdownModel>;
   readonly selection?: ComposerEditorSelection;
   readonly placeholder?: string;

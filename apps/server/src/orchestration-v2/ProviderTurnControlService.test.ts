@@ -141,6 +141,7 @@ function layerProjectionStore(
     ProjectionStore.ProjectionStoreV2,
     ProjectionStore.ProjectionStoreV2.of({
       apply: () => Effect.void,
+      getActiveGroupThreadIds: () => Effect.die("unused getActiveGroupThreadIds"),
       getLimitRecoveryCandidates: () => Effect.die("unused getLimitRecoveryCandidates"),
       getLimitRecoveryWakeAt: () => Effect.die("unused getLimitRecoveryWakeAt"),
       getOpenRemoteDelegatedTasks: Effect.die("unused getOpenRemoteDelegatedTasks"),

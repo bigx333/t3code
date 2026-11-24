@@ -286,6 +286,7 @@ type ThreadSettingsSubmenuPage =
   | { readonly kind: "runtime" };
 
 type ThreadSettingsSessionProps = {
+  readonly purpose?: "invite";
   readonly environmentId: EnvironmentId | null;
   readonly projectId: ProjectId | null;
   readonly cwd: string | null;
@@ -312,6 +313,7 @@ export type ExistingThreadSettingsRouteParams = {
 };
 
 type ThreadSettingsSessionValue = {
+  readonly purpose: "invite" | undefined;
   readonly environmentId: EnvironmentId | null;
   readonly providerInstanceId?: ProviderInstanceId;
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
@@ -644,6 +646,7 @@ function ThreadSettingsSessionProvider(
     setManageHidden,
     toggleHidden,
     pendingHiddenKeys,
+    purpose: props.purpose,
     runtimeMode: compatibleRuntimeMode,
     runtimeModeChoices,
     onUpdateRuntimeMode: props.onUpdateRuntimeMode,
@@ -976,9 +979,11 @@ function ThreadSettingsOptionsItem(props: {
   return (
     <View style={{ paddingBottom: insets.bottom + props.bottomInset + 12 }}>
       <ChatGptSharingStatus provider={selectedProvider} />
-      <Text className="px-5 pb-2 pt-2 text-sm font-t3-medium text-foreground-muted">
-        <T>Options</T>
-      </Text>
+      {session.purpose === "invite" && session.displayedDescriptors.length === 0 ? null : (
+        <Text className="px-5 pb-2 pt-2 text-sm font-t3-medium text-foreground-muted">
+          <T>Options</T>
+        </Text>
+      )}
       <Animated.View
         className="mx-4 overflow-hidden rounded-2xl bg-grouped-card"
         layout={THREAD_SETTINGS_OPTIONS_LAYOUT_TRANSITION}
@@ -1026,19 +1031,21 @@ function ThreadSettingsOptionsItem(props: {
             </Animated.View>
           );
         })}
-        <Animated.View layout={THREAD_SETTINGS_OPTIONS_LAYOUT_TRANSITION}>
-          <DisclosureRow
-            isLast
-            label={gt("Runtime", { $context: "agent permission mode setting" })}
-            value={(() => {
-              const label = session.runtimeModeChoices.find(
-                (choice) => choice.mode === session.runtimeMode,
-              )?.label;
-              return label === undefined ? undefined : m(label);
-            })()}
-            onPress={() => props.onOpenSubmenu({ kind: "runtime" })}
-          />
-        </Animated.View>
+        {session.purpose === "invite" ? null : (
+          <Animated.View layout={THREAD_SETTINGS_OPTIONS_LAYOUT_TRANSITION}>
+            <DisclosureRow
+              isLast
+              label={gt("Runtime", { $context: "agent permission mode setting" })}
+              value={(() => {
+                const label = session.runtimeModeChoices.find(
+                  (choice) => choice.mode === session.runtimeMode,
+                )?.label;
+                return label === undefined ? undefined : m(label);
+              })()}
+              onPress={() => props.onOpenSubmenu({ kind: "runtime" })}
+            />
+          </Animated.View>
+        )}
       </Animated.View>
 
       <Text className="px-5 pb-2 pt-7 text-sm font-t3-medium text-foreground-muted">
@@ -1362,9 +1369,11 @@ function ThreadSettingsModelsScreen() {
   return (
     <>
       <AppBar
-        title={gt("Thread settings")}
+        title={session.purpose === "invite" ? gt("Invite a model") : gt("Thread settings")}
         onClose={presentation.onClose}
-        closeAccessibilityLabel={gt("Cancel thread settings")}
+        closeAccessibilityLabel={
+          session.purpose === "invite" ? gt("Cancel invitation") : gt("Cancel thread settings")
+        }
         search={search}
         menus={[
           {
@@ -1410,9 +1419,13 @@ function ThreadSettingsModelsScreen() {
           session.hasLegacyModels,
         ]}
         confirm={{
-          label: session.pendingModel
-            ? gt("Save", { $context: "verb, button" })
-            : gt("Done", { $context: "button that closes the sheet" }),
+          label:
+            session.purpose === "invite"
+              ? gt("Invite")
+              : session.pendingModel
+                ? gt("Save", { $context: "verb, button" })
+                : gt("Done", { $context: "button that closes the sheet" }),
+          disabled: session.purpose === "invite" && session.pendingModel === null,
           onPress: commitAndClose,
         }}
         hideBottomBorder

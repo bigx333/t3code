@@ -1,6 +1,10 @@
 import { msg } from "gt-react";
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { m } from "~/i18n/messages";
+import {
+  groupAudienceForPrompt,
+  type ThreadGroup,
+} from "@t3tools/client-runtime/state/thread-group";
 import { isClearComposerCommand, parseSideChatCommand } from "@t3tools/shared/composerTrigger";
 import { readWorktreeBaseBranch } from "../../worktreeRepositoryChoiceStore";
 import { armFreshSession, disarmFreshSession, readFreshSessionArm } from "./freshSessionArms";
@@ -282,6 +286,7 @@ interface ComposerSendInput {
   readonly onSideChat?: ((message: SideChatMessage | undefined) => Promise<boolean>) | undefined;
   /** Refuses `/side` with this reason and keeps the draft. */
   readonly sideChatDisabledReason: string | null;
+  readonly threadGroup: ThreadGroup | null;
   readonly handleNewThreadInActiveProject: () => void;
   readonly persistThreadSettingsForNextTurn: (input: {
     threadId: ThreadId;
@@ -372,6 +377,7 @@ export function useComposerSend(input: ComposerSendInput) {
     acknowledgeActiveThreadWoke,
     onSideChat,
     sideChatDisabledReason,
+    threadGroup,
     handleNewThreadInActiveProject,
     persistThreadSettingsForNextTurn,
     linkCheckoutPullRequest,
@@ -1539,6 +1545,7 @@ export function useComposerSend(input: ComposerSendInput) {
           )
         : null;
       if (backgroundThreadRef) beginBackgroundDraftSubmissionByRef(backgroundThreadRef);
+      const groupAudience = groupAudienceForPrompt(threadGroup, messageTextForSend);
       const startPromise = startThreadTurn({
         environmentId,
         input: {
@@ -1560,6 +1567,7 @@ export function useComposerSend(input: ComposerSendInput) {
           interactionMode: DEFAULT_INTERACTION_MODE,
           dispatchMode: turnDispatchMode,
           ...(freshArm === undefined ? {} : { freshContext: true }),
+          ...(groupAudience === undefined ? {} : { groupAudience }),
           ...(bootstrap ? { bootstrap } : {}),
           createdAt: messageCreatedAt,
         },

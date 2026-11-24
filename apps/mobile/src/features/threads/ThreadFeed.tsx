@@ -8,6 +8,17 @@ import { Sheet } from "../../components/ui/Sheet";
 import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListSection } from "../../components/ui/ListSection";
 import { collectMobileAssistantTextSelectors } from "../../lib/assistantCitationSelection";
+import {
+  groupMentionOccurrences,
+  groupRowSpeaker,
+  sameThreadGroup,
+  isQuietPass,
+  quietPassLine,
+  type ThreadGroup,
+  withoutCloseLine,
+} from "@t3tools/client-runtime/state/thread-group";
+import { useQuietThreadStructure } from "../../state/use-thread-detail";
+import type { OrchestrationV2Run } from "@t3tools/contracts";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
 import { ASSISTANT_CITATION_MAX_TEXT_LENGTH, type AssistantCitation } from "@t3tools/contracts";
@@ -367,6 +378,7 @@ export interface ThreadFeedHistoryControls {
 }
 
 export interface ThreadFeedProps {
+  readonly group?: ThreadGroup | null;
   readonly toolCallVisibility?: ToolCallVisibility;
   readonly worktreeSetup?: WorktreeSetupCardProps | null;
   readonly preparingWorktree?: boolean;
@@ -1295,8 +1307,14 @@ function ArtifactTemplateCard(props: {
   );
 }
 
+function exactGroupMention(text: string, group: ThreadGroup | null | undefined) {
+  const mention = groupMentionOccurrences(text, group)[0];
+  return mention !== undefined && mention.source === text ? mention : undefined;
+}
+
 const AssistantMarkdownContent = memo(function AssistantMarkdownContent(props: {
   readonly markdown: string;
+  readonly group?: ThreadGroup | null;
   readonly environmentId: EnvironmentId;
   readonly citationSource?: Pick<AssistantCitation, "threadId" | "messageId">;
   readonly onCiteAssistantText?: (citation: AssistantCitation) => void;
@@ -1379,6 +1397,7 @@ const AssistantMarkdownContent = memo(function AssistantMarkdownContent(props: {
         renderImage={props.renderImage}
         skills={props.skills}
         models={models}
+        group={props.group}
       />
       {quoteChoices.length > 0 && props.onCiteAssistantText ? (
         <Sheet title={gt("Choose quote source")} onClose={() => setQuoteSelection(null)}>
@@ -1413,6 +1432,7 @@ function AssistantMarkdownBlocks(props: {
   readonly markdown: string;
   readonly citationPath?: string;
   readonly onCiteText?: (text: string, path: string) => void;
+  readonly group?: ThreadGroup | null;
   /** The reply's reference definitions, passed down by the enclosing fold. */
   readonly definitions?: ReadonlyArray<string> | undefined;
   readonly markdownStyles: MarkdownStyleSet;
@@ -1474,6 +1494,7 @@ function AssistantMarkdownBlocks(props: {
           )}
           skills={props.skills}
           models={props.models}
+          group={props.group}
           textStyle={props.markdownStyles.nativeTextStyle}
           onCiteText={
             props.onCiteText
@@ -1689,6 +1710,7 @@ function OpenSenderThreadButton(props: {
 /** Automation prompts are long, repeated runbooks; a folded bubble keeps them out of the way. */
 function ThreadAutomationMessageRow(props: {
   readonly environmentId: EnvironmentId;
+  readonly group?: ThreadGroup | null;
   readonly text: string;
   readonly context?: OrchestrationMessageContext;
   readonly scheduledTaskId: ScheduledTaskId | undefined;
@@ -1766,6 +1788,7 @@ function ThreadAutomationMessageRow(props: {
             <MarkdownImageAvailableWidthContext value={props.contentMaxWidth}>
               <UserMessageContent
                 text={props.text}
+                group={props.group}
                 environmentId={props.environmentId}
                 context={props.context}
                 markdownStyles={props.markdownStyles}
@@ -1950,6 +1973,7 @@ function renderFeedEntry(
   info: { item: ThreadFeedRow; index: number },
   props: Pick<
     ThreadFeedProps,
+    | "group"
     | "environmentId"
     | "onUseArtifactTemplate"
     | "onCiteAssistantText"
@@ -1966,6 +1990,7 @@ function renderFeedEntry(
     readonly onOpenSetupDetails: () => void;
     readonly pendingFoldMessageId: string | null;
     readonly formatMessageTime: (input: string) => string;
+    readonly runs: ReadonlyArray<OrchestrationV2Run>;
     readonly copiedRowId: string | null;
     readonly expandedWorkRows: Record<string, boolean>;
     readonly workRowSizing: ReturnType<typeof deriveThreadWorkLogSizing>;
@@ -2107,6 +2132,7 @@ function renderFeedEntry(
         <MarkdownImageAvailableWidthContext value={props.markdownContentWidth}>
           <AssistantMarkdownContent
             markdown={entry.text}
+            group={props.group}
             environmentId={props.environmentId}
             markdownStyles={markdownStyles.assistant}
             linkHandlers={props.markdownLinkHandlers}
@@ -2242,8 +2268,24 @@ function renderFeedEntry(
   if (entry.type === "message") {
     const { message } = entry;
     const isUser = message.role === "user";
+    const speaker = isUser
+      ? null
+      : groupRowSpeaker(props.group, {
+          speaker: message.speaker,
+          run: props.group == null ? undefined : props.runs.find((run) => run.id === message.runId),
+        });
+    if (speaker !== null && !message.streaming && isQuietPass(message.text)) {
+      return (
+        <Text
+          accessibilityLabel={quietPassLine(speaker.label)}
+          className="px-1 py-1 text-xs text-foreground-muted"
+        >
+          {quietPassLine(speaker.label)}
+        </Text>
+      );
+    }
     const presentation = resolveUserMessagePresentation(message);
-    const renderedText = presentation.text;
+    const renderedText = speaker === null ? presentation.text : withoutCloseLine(presentation.text);
     const styles = isUser ? markdownStyles.user : markdownStyles.assistant;
     const timestampLabel = props.formatMessageTime(isUser ? message.createdAt : message.updatedAt);
     const attachments = message.attachments ?? [];
@@ -2293,6 +2335,7 @@ function renderFeedEntry(
       return (
         <ThreadAutomationMessageRow
           environmentId={props.environmentId}
+          group={props.group}
           text={presentation.text}
           context={message.context}
           scheduledTaskId={presentation.scheduledTaskId}
@@ -2544,6 +2587,7 @@ function renderFeedEntry(
                       >
                         <UserMessageContent
                           text={renderedText}
+                          group={props.group}
                           environmentId={props.environmentId}
                           context={message.context}
                           markdownStyles={styles}
@@ -2645,6 +2689,7 @@ function renderFeedEntry(
     const enterAnimated = isFreshTimestamp(message.createdAt);
     return (
       <Animated.View
+        accessibilityLabel={`${speaker?.label ?? "Assistant"} reply`}
         className={cn(
           showAssistantMeta && !(message.runId && props.failedRunIds.has(message.runId))
             ? "mb-5 px-1"
@@ -2653,10 +2698,16 @@ function renderFeedEntry(
         )}
         {...(enterAnimated ? { entering: FadeIn.duration(220) } : {})}
       >
+        {speaker === null ? null : (
+          <Text className="mb-1 text-xs text-foreground-muted">
+            {speaker.label} · {speaker.model}
+          </Text>
+        )}
         {renderedText.trim().length > 0 ? (
           <MarkdownImageAvailableWidthContext value={props.markdownContentWidth}>
             <AssistantMarkdownContent
               markdown={renderedText}
+              group={props.group}
               environmentId={props.environmentId}
               citationSource={{ threadId: props.threadId, messageId: message.id }}
               onCiteAssistantText={props.onCiteAssistantText}
@@ -2728,6 +2779,7 @@ function renderFeedEntry(
 
 type UserMessageContentProps = {
   readonly text: string;
+  readonly group?: ThreadGroup | null;
   readonly environmentId: EnvironmentId;
   readonly context?: OrchestrationMessageContext;
   readonly markdownStyles: MarkdownStyleSet;
@@ -2873,6 +2925,7 @@ function UserMessageMarkdownContent(props: UserMessageContentProps) {
         contextClipboardFragment={contextClipboardFragment}
         skills={props.skills}
         models={models}
+        group={props.group}
         textStyle={props.markdownStyles.nativeTextStyle}
         preserveSoftBreaks
         {...props.linkHandlers}
@@ -2906,6 +2959,7 @@ function UserMessageMarkdownContent(props: UserMessageContentProps) {
             contextClipboardFragment={contextClipboardFragment}
             skills={props.skills}
             models={models}
+            group={props.group}
             textStyle={props.markdownStyles.nativeTextStyle}
             preserveSoftBreaks
             {...props.linkHandlers}
@@ -3071,12 +3125,15 @@ let lastSplitViewport: { windowWidth: number; width: number; height: number } | 
 export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   const gt = useGT();
   const m = useMessages();
+  const [group, setGroup] = useState(props.group);
+  if (!sameThreadGroup(group, props.group)) setGroup(props.group);
   const formatMessageTime = useMessageTimeFormatter();
   const { listRef, onIsAtEndChange, onHeaderMaterialVisibilityChange } = props;
   const workflowOpening = useWorkflowOpening(props.detailRef);
   const guestShare = useThreadGuestShare(props.detailRef);
   const deviceType = useDeviceType();
   const duoColumns = useNativeWorkspaceColumnsSupported() && isDuoDevice(deviceType);
+  const structure = useQuietThreadStructure(props.group == null ? null : props.detailRef);
   const openPullRequest = useOpenPullRequest();
   const navigation = useNavigation();
   const openThreadLink = useOpenThreadLink(props.environmentId);
@@ -3345,6 +3402,13 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     reply?: MarkdownLinkReply,
     withGallery?: (source: FilePreviewSource) => FilePreviewSource,
   ) => {
+    const mention = exactGroupMention(href, group);
+    if (mention) {
+      if (mention.member !== "primary") {
+        openThreadLink(scopeThreadRef(props.environmentId, mention.member));
+      }
+      return;
+    }
     markdownLinkRequest.current?.abort();
     const request = new AbortController();
     markdownLinkRequest.current = request;
@@ -3461,6 +3525,19 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     onImagePress: (href, withGallery) => onMarkdownLinkPress(href, true, undefined, withGallery),
     resolveImageSource,
     fileContextMenu: (href) => {
+      const mention = exactGroupMention(href, group);
+      if (mention) {
+        return {
+          title: mention.label,
+          actions:
+            mention.member === "primary"
+              ? [{ id: "copy-mention", title: gt("Copy") }]
+              : [
+                  { id: "open-member", title: gt("Open work") },
+                  { id: "copy-mention", title: gt("Copy") },
+                ],
+        };
+      }
       const skill = enrichedSkillReference(href, props.skills);
       if (skill) {
         return {
@@ -3501,6 +3578,13 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       return target ? fileChipMenu(target) : undefined;
     },
     onFileContextMenuAction: (href, actionId, reply) => {
+      const mention = exactGroupMention(href, group);
+      if (mention) {
+        if (actionId === "open-member" && mention.member !== "primary") {
+          openThreadLink(scopeThreadRef(props.environmentId, mention.member));
+        } else if (actionId === "copy-mention") copyTextWithHaptic(mention.source);
+        return;
+      }
       const skill = enrichedSkillReference(href, props.skills);
       if (skill) {
         const instructionsPath = enrichedSkillInstructionsPath(skill);
@@ -3713,6 +3797,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   const listAppearanceData = {
     gt,
     setupDetailsOpen,
+    group,
     disclosureLayout,
     reduceMotion,
     onCiteAssistantText: props.onCiteAssistantText,
@@ -4190,6 +4275,8 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
           ) : null}
           {renderFeedEntry(info, {
             m,
+            group,
+            runs: structure?.projection.runs ?? [],
             userMessageGrouping: info.item.userMessageGrouping,
             formatMessageTime,
             environmentId: props.environmentId,

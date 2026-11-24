@@ -1509,6 +1509,8 @@ export const ServerSettings = Schema.Struct({
   workflowsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** Beta: Claude and Codex predict the next prompt after completed turns. Codex follows a change at once; open Claude threads after they restart. */
   promptSuggestionsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** Labs: invite models from any provider into one thread. Off refuses invites only. */
+  groupConversationsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   sidebarAutoSettleKeepPullRequests: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
@@ -1948,6 +1950,7 @@ export const ServerSettingsPatch = Schema.Struct({
   linkedEnvironmentsEnabled: Schema.optionalKey(Schema.Boolean),
   workflowsEnabled: Schema.optionalKey(Schema.Boolean),
   promptSuggestionsEnabled: Schema.optionalKey(Schema.Boolean),
+  groupConversationsEnabled: Schema.optionalKey(Schema.Boolean),
   backgroundActivity: Schema.optionalKey(
     Schema.Struct({
       schemaVersion: Schema.optionalKey(Schema.Literal(1)),

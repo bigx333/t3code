@@ -443,6 +443,10 @@
       "types": "./src/state/threadRepositories.ts",
       "default": "./src/state/threadRepositories.ts"
     },
+    "./state/thread-group": {
+      "types": "./src/state/threadGroup.ts",
+      "default": "./src/state/threadGroup.ts"
+    },
     "./state/thread-execution": {
       "types": "./src/state/threadExecution.ts",
       "default": "./src/state/threadExecution.ts"

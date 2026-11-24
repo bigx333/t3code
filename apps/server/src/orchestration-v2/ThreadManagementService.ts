@@ -13,6 +13,7 @@ import {
   type ChatAttachment,
   CommandId,
   isDelegatedAppThread,
+  isOrchestrationV2PublicationRun,
   isListedThreadLineage,
   MessageId,
   OrchestrationV2StopWorkflowError,
@@ -594,7 +595,9 @@ export function isTerminalRunStatus(
 export function latestRun(
   projection: Pick<OrchestrationV2ThreadProjection, "runs">,
 ): OrchestrationV2Run | undefined {
-  return projection.runs.toSorted((left, right) => right.ordinal - left.ordinal)[0];
+  return projection.runs
+    .filter((run) => !isOrchestrationV2PublicationRun(run))
+    .toSorted((left, right) => right.ordinal - left.ordinal)[0];
 }
 
 function latestRestartContinuation(

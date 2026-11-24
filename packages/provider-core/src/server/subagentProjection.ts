@@ -22,8 +22,12 @@ import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2Pe
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import {
+  isOrchestrationV2PublicationRun,
+  isOrchestrationV2WorkActive,
+  latestProviderTurnForAttempt,
+} from "@t3tools/contracts";
 import { derive } from "./IdAllocator.ts";
-import { isOrchestrationV2WorkActive, latestProviderTurnForAttempt } from "@t3tools/contracts";
 
 function trimmed(value: string | null | undefined): string | undefined {
   const result = value?.trim();
@@ -94,12 +98,17 @@ export function makeSubagentChildThread(input: {
     settledAt: null,
     snoozedUntil: null,
     snoozedAt: null,
+    lastSnoozeWakeAt: null,
     pinnedAt: null,
     pinOrderKey: null,
+    activeOrderKey: null,
     autoSettleDisabledAt: null,
     // A guest link belongs to the thread it was made for.
     guestShare: null,
+    // Seats belong to the thread that invited them.
+    group: null,
     lastVisitedAt: null,
+    opens: null,
     deletedAt: null,
   };
 }
@@ -408,7 +417,10 @@ export function delegatedTaskProgress(projection: {
     ["completed", "failed", "cancelled", "interrupted", "rolled_back"].includes(status);
   const monitorRuns = monitorUpdateRunIds(projection.messages);
   const workRuns = projection.runs.filter(
-    (run) => !monitorRuns.has(run.id) && run.status !== "rolled_back",
+    (run) =>
+      !monitorRuns.has(run.id) &&
+      run.status !== "rolled_back" &&
+      !isOrchestrationV2PublicationRun(run),
   );
   const held = (run: OrchestrationV2Run) => run.status === "queued" && run.queueHeld === true;
   const active = workRuns.some((run) => !terminal(run.status) && !held(run));
