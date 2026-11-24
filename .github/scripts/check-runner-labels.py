@@ -10,7 +10,10 @@ Two modes:
     check-runner-labels.py
         Scan `.github/workflows/*.yml` and fail on `self-hosted` or a
         private-runner label (`linux-runner`, `windows-runner`,
-        `macos-runner`, `bench-*`). Comments are ignored.
+        `macos-runner`, `bench-*`), and on any literal `runs-on` label that
+        is not a hosted image. A `runs-on` that is a whole `${{ ... }}`
+        expression is validated at runtime with `--runner`. Comments are
+        ignored.
 
     check-runner-labels.py --runner LABEL [--verify-runner LABEL]
         Validate labels passed to a reusable workflow, where the static scan
@@ -55,12 +58,53 @@ def strip_comment(line):
     return line
 
 
+RUNS_ON = re.compile(r"^(?P<indent>\s*)(?:-\s+)?runs-on:\s*(?P<value>.*?)\s*$")
+EXPRESSION = re.compile(r"^\$\{\{.*\}\}$")
+
+
+def unquote(value):
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        return value[1:-1]
+    return value
+
+
+def check_runs_on(value):
+    """Return a message when a `runs-on` value names anything but hosted images."""
+    if EXPRESSION.match(value):
+        return None
+    if value.startswith("[") and value.endswith("]"):
+        items = [unquote(item.strip()) for item in value[1:-1].split(",") if item.strip()]
+    else:
+        items = [unquote(value)]
+    unknown = [item for item in items if not HOSTED_LABEL.match(item)]
+    if unknown:
+        return f"runs-on names a non-hosted runner {unknown[0]!r}"
+    return None
+
+
+def block_value(lines, start, indent):
+    """Collect a block `runs-on:` value: a flow list of its `- item` lines, or the mapping text."""
+    items = []
+    for line in lines[start:]:
+        code = strip_comment(line).rstrip()
+        if not code.strip():
+            continue
+        if len(code) - len(code.lstrip()) <= indent:
+            break
+        stripped = code.strip()
+        if not stripped.startswith("- "):
+            return stripped
+        items.append(stripped[2:].strip())
+    return "[" + ", ".join(items) + "]"
+
+
 def scan_workflows(workflows_dir=WORKFLOWS_DIR):
     """Return one message per workflow line that references a private runner."""
     problems = []
     paths = sorted(workflows_dir.glob("*.yml")) + sorted(workflows_dir.glob("*.yaml"))
     for path in paths:
-        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for number, line in enumerate(lines, 1):
             code = strip_comment(line)
             match = FORBIDDEN_REFERENCE.search(code)
             if match:
@@ -68,6 +112,21 @@ def scan_workflows(workflows_dir=WORKFLOWS_DIR):
                     f"{path.name}:{number}: references private runner {match.group(0)!r}: "
                     f"{code.strip()}"
                 )
+                continue
+            runs_on = RUNS_ON.match(code)
+            if not runs_on:
+                continue
+            value = runs_on.group("value")
+            if not value:
+                value = block_value(lines, number, len(runs_on.group("indent")))
+                if not value.startswith("["):
+                    problems.append(
+                        f"{path.name}:{number}: runs-on must list hosted labels, not {value!r}"
+                    )
+                    continue
+            message = check_runs_on(value)
+            if message:
+                problems.append(f"{path.name}:{number}: {message}: {code.strip()}")
     return problems
 
 

@@ -62,7 +62,11 @@ export function ThreadGroupInviteScreen({
       onSelectModel={(option) =>
         void invite({
           environmentId: ref.environmentId,
-          input: { threadId: ref.threadId, modelSelection: option.selection },
+          input: {
+            threadId: ref.threadId,
+            modelSelection: option.selection,
+            creationSource: "mobile",
+          },
         }).then((result) => alertGroupCommandFailure(m(msg("Could not invite that model")), result))
       }
       optionDescriptors={[]}

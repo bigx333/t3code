@@ -56,6 +56,43 @@ class ScanWorkflowsTests(unittest.TestCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("bench-arm64", problems[0])
 
+    def test_rejects_unknown_literal_pools(self):
+        for value in ("custom-pool", '"custom-pool"', "[ubuntu-24.04, custom-pool]", "macos-15-large", "ubuntu-${{ inputs.arch }}"):
+            with self.subTest(value=value):
+                self.workflows.joinpath("build.yml").unlink(missing_ok=True)
+                problems = self.scan("build.yml", f"        runs-on: {value}\n")
+                self.assertEqual(len(problems), 1, problems)
+                self.assertIn("build.yml:1", problems[0])
+
+    def test_rejects_block_runs_on_with_unknown_pool(self):
+        problems = self.scan("build.yml", """
+            jobs:
+              build:
+                runs-on:
+                  - ubuntu-24.04
+                  - custom-pool
+              grouped:
+                runs-on:
+                  group: larger-runners
+        """)
+        self.assertEqual(len(problems), 2, problems)
+        self.assertIn("custom-pool", problems[0])
+        self.assertIn("group", problems[1])
+
+    def test_accepts_quoted_list_and_expression_runs_on(self):
+        self.assertEqual(self.scan("build.yml", """
+            jobs:
+              a:
+                runs-on: "ubuntu-24.04"
+              b:
+                runs-on: [macos-latest]
+              c:
+                runs-on: ${{ inputs.runner }}
+              d:
+                runs-on:
+                  - windows-2025
+        """), [])
+
     def test_ignores_comments_and_action_names(self):
         self.assertEqual(self.scan("notes.yml", """
             # A private runner would be self-hosted or linux-runner.

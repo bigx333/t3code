@@ -88,6 +88,8 @@ type PendingRestore =
 
 interface RootScan {
   readonly active: boolean;
+  /** Recorded in this environment's journal, so its staged restores are this environment's. */
+  readonly owned: boolean;
   readonly root: HarnessSkillRoot;
   readonly directory: string;
   readonly skills: ReadonlyArray<string>;
@@ -283,7 +285,7 @@ export const make = Effect.gen(function* () {
     }
   });
 
-  const resolveRoots = Effect.fn("SkillsLibrary.resolveRoots")(function* (includeRecorded = false) {
+  const resolveRoots = Effect.fn("SkillsLibrary.resolveRoots")(function* () {
     const libraryPath = path.join(home, ".agents", "skills");
     const libraryReal = yield* realPath(libraryPath);
     const instances = (yield* registry.listInstances).filter((instance) => instance.enabled);
@@ -305,12 +307,15 @@ export const make = Effect.gen(function* () {
         roots.push({ root, directory: instance.sharedSkillsDirectory, active: true });
       }
     }
-    if (includeRecorded)
-      roots.push(...(yield* readRoots()).map((root) => ({ ...root, active: false })));
-    const unique = new Map<string, (typeof roots)[number]>();
+    const recorded = yield* readRoots();
+    roots.push(...recorded.map((root) => ({ ...root, active: false })));
+    const owned = new Set(yield* Effect.forEach(recorded, (root) => realPath(root.directory)));
+    const unique = new Map<string, (typeof roots)[number] & { readonly owned: boolean }>();
     for (const candidate of roots) {
       const real = yield* realPath(candidate.directory);
-      if (real !== libraryReal && !unique.has(real)) unique.set(real, candidate);
+      if (real !== libraryReal && !unique.has(real)) {
+        unique.set(real, { ...candidate, owned: owned.has(real) });
+      }
     }
     return { libraryPath, roots: [...unique.values()] };
   });
@@ -339,7 +344,7 @@ export const make = Effect.gen(function* () {
   });
 
   const scan = Effect.fn("SkillsLibrary.scan")(function* () {
-    const { libraryPath, roots } = yield* resolveRoots(true);
+    const { libraryPath, roots } = yield* resolveRoots();
     const conflicts: Array<SkillsLibraryStatus["conflicts"][number]> = [];
     const conflicted = new Set<string>();
     const reported = new Set<string>();
@@ -354,20 +359,22 @@ export const make = Effect.gen(function* () {
       exists(path.join(libraryPath, name, "SKILL.md")),
     );
     const rootScans: Array<RootScan> = [];
-    for (const { root, directory, active } of roots) {
+    for (const { root, directory, active, owned } of roots) {
       const names = yield* readNames(directory);
       const kinds = yield* Effect.forEach(visible(names, root.private), (name) =>
         entryKind(directory, name, libraryPath).pipe(Effect.map((kind) => ({ name, kind }))),
       );
       const named = (kind: EntryKind) =>
         kinds.filter((entry) => entry.kind === kind).map((entry) => entry.name);
-      const restores = yield* pendingRestores(directory, names);
+      // A staged copy in a root this environment never recorded is the user's or another's.
+      const restores = owned ? yield* pendingRestores(directory, names) : [];
       for (const restore of restores) {
         if (restore.finish === "conflict")
           conflict({ name: restore.name, paths: restore.paths }, active);
       }
       rootScans.push({
         active,
+        owned,
         root,
         directory,
         skills: named("skill"),
@@ -556,6 +563,8 @@ export const make = Effect.gen(function* () {
 
   const detach = Effect.fn("SkillsLibrary.detach")(function* () {
     const current = yield* scan();
+    // Record every root a restore will stage into first, so a crash mid-restore stays ours to finish.
+    yield* writeRoots(current.roots.filter((root) => root.owned || root.linked.length > 0));
     const remaining: RootScan[] = [];
     for (const rootScan of current.roots) {
       if (yield* restore(current.libraryPath, rootScan)) remaining.push(rootScan);
@@ -564,13 +573,7 @@ export const make = Effect.gen(function* () {
   });
 
   const finishDetach = Effect.fn("SkillsLibrary.finishDetach")(function* () {
-    if (yield* exists(rootsPath)) return yield* detach();
-    for (const { directory } of (yield* resolveRoots()).roots) {
-      yield* finishRestores(
-        directory,
-        yield* pendingRestores(directory, yield* readNames(directory)),
-      );
-    }
+    if (yield* exists(rootsPath)) yield* detach();
   });
 
   const refresh = Effect.fn("SkillsLibrary.refresh")(function* () {

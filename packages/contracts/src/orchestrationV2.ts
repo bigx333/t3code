@@ -5005,7 +5005,11 @@ export const OrchestrationV2RpcSchemas = {
     output: Schema.Void,
   },
   threadGroupInvite: {
-    input: Schema.Struct({ threadId: ThreadId, modelSelection: ModelSelection }),
+    input: Schema.Struct({
+      threadId: ThreadId,
+      modelSelection: ModelSelection,
+      creationSource: Schema.optional(OrchestrationV2CreationSource),
+    }),
     output: OrchestrationV2ThreadGroup,
   },
   threadGroupRemove: {

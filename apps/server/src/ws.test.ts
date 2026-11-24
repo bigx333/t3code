@@ -17,6 +17,7 @@ import {
   AuthSessionId,
   AuthSourceControlWriteScope,
   ORCHESTRATION_PROTOCOL_VERSION,
+  ORCHESTRATION_V2_WS_METHODS,
   ORCHESTRATION_PROTOCOL_QUERY_PARAM,
   EnvironmentId,
   EventId,
@@ -2851,5 +2852,80 @@ it.effect("a session that can only read sees a workflow run but cannot steer it"
       Array.from({ length: 3 }, () => "EnvironmentAuthorizationError"),
     );
     assert.deepEqual(calls, []);
+  }).pipe(Effect.provide(layerWorkflowRpcTest), Effect.scoped),
+);
+
+const groupInviteRpcs = WsRpcGroup.omit(
+  ...[...WsRpcGroup.requests.keys()].filter(
+    (
+      tag,
+    ): tag is Exclude<
+      keyof typeof RpcAuthorization.RPC_REQUIRED_SCOPES,
+      typeof ORCHESTRATION_V2_WS_METHODS.threadGroupInvite
+    > => tag !== ORCHESTRATION_V2_WS_METHODS.threadGroupInvite,
+  ),
+);
+
+it.effect("a group invite records the client's creation source, web when it sends none", () =>
+  Effect.gen(function* () {
+    const invites: Array<unknown> = [];
+    const services = Layer.mergeAll(
+      layerUnusedConfigRpcServices,
+      Layer.mock(ExternalLauncher.ExternalLauncher)({}),
+      Layer.mock(ProviderRegistry.ProviderRegistry)({}),
+      Layer.mock(UsageLimitSources.UsageLimitSources)({}),
+      Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({}),
+      Layer.mock(DirectEndpoints.DirectEndpoints)({}),
+      Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/unused" }),
+      Layer.mock(ScratchThreadPromotion.ScratchThreadPromotion)({}),
+      Layer.mock(ServerEnvironment.ServerEnvironment)({}),
+      Layer.mock(EnvironmentAuth.EnvironmentAuth)({}),
+      Layer.mock(ThreadGroupService.ThreadGroupService)({
+        invite: (input) =>
+          Effect.sync(() => {
+            invites.push({ createdBy: input.createdBy, creationSource: input.creationSource });
+            return {
+              status: "active" as const,
+              primary: { model: "primary", label: "Primary", handle: "primary" },
+              seats: [],
+              discussion: null,
+              closedBecause: null,
+              closedAt: null,
+            };
+          }),
+      }),
+    );
+    const scopes = [AuthOrchestrationReadScope, AuthOrchestrationOperateScope];
+    const client = yield* RpcTest.makeClient(groupInviteRpcs).pipe(
+      Effect.provide(
+        layerWsRpc(
+          {
+            sessionId: AuthSessionId.make("group-invite-test"),
+            subject: "group-invite-test",
+            method: "browser-session-cookie",
+            scopes,
+          },
+          {},
+          yield* ServerBrowser.ServerBrowser,
+          () => Effect.void,
+          { secretReferences: true },
+        ).pipe(Layer.provide(services), Layer.merge(RpcAuthorization.layer(scopes))),
+      ),
+    );
+    const invite = {
+      threadId: ThreadId.make("thread:group"),
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+    };
+
+    yield* client[ORCHESTRATION_V2_WS_METHODS.threadGroupInvite]({
+      ...invite,
+      creationSource: "mobile",
+    });
+    yield* client[ORCHESTRATION_V2_WS_METHODS.threadGroupInvite](invite);
+
+    assert.deepEqual(invites, [
+      { createdBy: "user", creationSource: "mobile" },
+      { createdBy: "user", creationSource: "web" },
+    ]);
   }).pipe(Effect.provide(layerWorkflowRpcTest), Effect.scoped),
 );

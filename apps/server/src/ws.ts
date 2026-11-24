@@ -2103,7 +2103,11 @@ export const layerWsRpc = (
           ),
         [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: (input) => threadManagement.stopWorkflow(input),
         [ORCHESTRATION_V2_WS_METHODS.threadGroupInvite]: (input) =>
-          threadGroups.invite({ ...input, createdBy: "user", creationSource: "web" }),
+          threadGroups.invite({
+            ...input,
+            createdBy: "user",
+            creationSource: input.creationSource ?? "web",
+          }),
         [ORCHESTRATION_V2_WS_METHODS.threadGroupRemove]: (input) => threadGroups.remove(input),
         [ORCHESTRATION_V2_WS_METHODS.threadGroupEnd]: (input) => threadGroups.end(input),
         [ORCHESTRATION_V2_WS_METHODS.forceStopThread]: (input) =>

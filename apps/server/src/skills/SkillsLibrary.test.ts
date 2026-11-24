@@ -597,5 +597,62 @@ it.layer(NodeServices.layer)("SkillsLibrary", (it) => {
           expect(yield* fs.readDirectory(claude)).toEqual(["hello"]);
         }),
     );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "leaves staged restores alone at startup unless this environment recorded the root",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, claude, library, service, skill, read, link } = yield* setup();
+          const startup = (stateHome: string) =>
+            Layer.build(SkillsLibrary.layer).pipe(
+              Effect.provide(
+                Layer.mergeAll(
+                  ServerSettings.ServerSettingsService.layerTest(),
+                  ServerConfig.layerTest(home, stateHome),
+                  Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+                    listInstances: Effect.succeed([]),
+                    subscribeChanges: PubSub.unbounded<void>().pipe(
+                      Effect.flatMap(PubSub.subscribe),
+                    ),
+                  }),
+                ),
+              ),
+              Effect.provideService(HostProcess.HomeDirectory, home),
+              Effect.provideService(HostProcess.Environment, { HOME: home }),
+            );
+          yield* skill(claude, "hello", "hello");
+          yield* service.apply;
+          // A root this environment never linked, holding the user's own staging-named folders.
+          const unrecorded = path.join(home, ".gemini", "config", "skills");
+          yield* skill(unrecorded, ".mine.t3-restore", "mine");
+          yield* skill(unrecorded, "same", "same");
+          yield* skill(unrecorded, ".same.t3-restore", "same");
+          // This environment's detach crashed after unlinking, before the rename.
+          yield* fs.remove(path.join(claude, "hello"));
+          yield* fs.copy(path.join(library, "hello"), path.join(claude, ".hello.t3-restore"));
+          const harnesses = Effect.forEach([".agents", ".claude", ".codex", ".gemini"], (name) =>
+            snapshot(path.join(home, name)),
+          );
+          const before = yield* harnesses;
+
+          yield* startup(path.join(home, "other-environment"));
+          expect(yield* harnesses).toEqual(before);
+
+          yield* startup(path.join(home, "environment"));
+          expect(yield* link(claude, "hello")).toBeUndefined();
+          expect(yield* read(claude, "hello")).toBe(yield* read(library, "hello"));
+          expect(yield* fs.readDirectory(claude)).toEqual(["hello"]);
+
+          const restoredBefore = yield* harnesses;
+          yield* startup(path.join(home, "environment"));
+          yield* startup(path.join(home, "third-environment"));
+          expect(yield* harnesses).toEqual(restoredBefore);
+          expect((yield* fs.readDirectory(unrecorded)).sort()).toEqual([
+            ".mine.t3-restore",
+            ".same.t3-restore",
+            "same",
+          ]);
+        }),
+    );
   });
 });
