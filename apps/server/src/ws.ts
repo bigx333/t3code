@@ -3,6 +3,7 @@ import { GitCommandError, OrchestrationDispatchCommandError } from "@t3tools/con
 import * as NodeCrypto from "node:crypto";
 import * as FeatureFlags from "@t3tools/shared/FeatureFlags";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as PstackPack from "./pstack/PstackPack.ts";
 import * as Context from "effect/Context";
 import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -347,7 +348,16 @@ const resolveEditorConfig = Effect.fn("ws.resolveEditorConfig")(function* <E, R>
 
 export const withLateConfigDiscovery = <E, R>(
   config: ClientServerConfig,
-  liveUpdates: Stream.Stream<ServerConfigStreamEvent, E, R>,
+  liveUpdates: Stream.Stream<
+    | ServerConfigStreamEvent
+    | {
+        readonly type: "pstackUpdated";
+        readonly settings: ClientServerConfig["settings"];
+        readonly pstackSkills: ClientServerConfig["pstackSkills"];
+      },
+    E,
+    R
+  >,
   launcher: EditorDiscovery,
   remoteOpenTargets: RemoteOpenTargets.RemoteOpenTargets["Service"],
   directEndpoints: Pick<DirectEndpoints.DirectEndpoints["Service"], "resolve">,
@@ -410,6 +420,15 @@ export const withLateConfigDiscovery = <E, R>(
               return [current, []];
             }
             const next = { ...current, directEndpoints: event.endpoints };
+            return [next, [{ version: 1, type: "snapshot", config: next }]];
+          }
+          case "pstackUpdated": {
+            const { pstackSkills: _pstackSkills, ...rest } = current;
+            const next = {
+              ...rest,
+              settings: event.settings,
+              ...(event.pstackSkills === undefined ? {} : { pstackSkills: event.pstackSkills }),
+            };
             return [next, [{ version: 1, type: "snapshot", config: next }]];
           }
           case "keybindingsUpdated":
@@ -1579,6 +1598,7 @@ export const layerWsRpc = (
       const databaseStorage = yield* DatabaseStorage.DatabaseStorage;
       const serverSettings = yield* ServerSettings.ServerSettingsService;
       const secretResolver = yield* SecretResolver.SecretResolver;
+      const pstack = yield* PstackPack.PstackPack;
       const peerLinks = yield* PeerLinks.PeerLinks;
       const peerLinkRequests = yield* PeerLinkRequests.PeerLinkRequests;
       const peerThreadRelay = yield* PeerThreadRelay.PeerThreadRelay;
@@ -1868,6 +1888,7 @@ export const layerWsRpc = (
           yield* serverSettings.getSettings,
           settingsClient,
         );
+        const pstackSkills = yield* pstack.catalog;
         const environment = yield* serverEnvironment.getDescriptor;
         const auth = yield* serverAuth.getDescriptor();
         const scratchWorkspaceRoot = yield* managedFolders.scratchRoot;
@@ -1888,6 +1909,7 @@ export const layerWsRpc = (
           auth,
           cwd: config.cwd,
           hostname: yield* HostProcess.Hostname,
+          ...(pstackSkills === undefined ? {} : { pstackSkills }),
           keybindingsConfigPath: config.keybindingsConfigPath,
           keybindings: keybindingsConfig.keybindings,
           issues: keybindingsConfig.issues,
@@ -3583,14 +3605,37 @@ export const layerWsRpc = (
                     )
                   : Stream.empty;
               const settingsUpdates = settingsChanges.pipe(
-                Stream.map((settings) =>
-                  ServerSettings.redactServerSettingsForClient(settings, settingsClient),
+                Stream.mapAccum(
+                  () => config.settings.pstackEnabled,
+                  (enabled, settings) =>
+                    [
+                      settings.pstackEnabled,
+                      [{ settings, changed: enabled !== settings.pstackEnabled }],
+                    ] as const,
                 ),
-                Stream.map((settings) => ({
-                  version: 1 as const,
-                  type: "settingsUpdated" as const,
-                  payload: { settings },
-                })),
+                Stream.mapEffect(({ settings, changed }) =>
+                  Effect.gen(function* () {
+                    if (changed)
+                      return {
+                        type: "pstackUpdated" as const,
+                        settings: ServerSettings.redactServerSettingsForClient(
+                          settings,
+                          settingsClient,
+                        ),
+                        pstackSkills: yield* pstack.catalog,
+                      };
+                    return {
+                      version: 1,
+                      type: "settingsUpdated",
+                      payload: {
+                        settings: ServerSettings.redactServerSettingsForClient(
+                          settings,
+                          settingsClient,
+                        ),
+                      },
+                    } satisfies ServerConfigStreamEvent;
+                  }),
+                ),
               );
 
               const liveUpdates = Stream.merge(

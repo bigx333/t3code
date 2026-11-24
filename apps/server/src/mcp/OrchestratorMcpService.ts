@@ -1,8 +1,12 @@
 import {
+  invalidOptionSelections,
+  isCapabilityModelVisible,
+  providerConstraints,
+} from "../provider/orchestrationTargets.ts";
+import {
   CommandId,
   type RunId,
   idleCompactionOf,
-  isProviderAvailable,
   MessageId,
   type ModelSelection,
   NodeId,
@@ -320,6 +324,7 @@ const LISTED_MODEL_LIMIT = 8;
 /**
  * Lists visible models, keeping pinned models and limiting large catalogs by default.
  * Whole provider words select the provider; partial words filter models when any match.
+ * `allModels` lifts every cap.
  */
 function listCapabilityModels(input: {
   readonly provider: ServerProvider;
@@ -328,10 +333,11 @@ function listCapabilityModels(input: {
     | undefined;
   readonly isPinned: (model: ServerProviderModel) => boolean;
   readonly searchTerms: ReadonlyArray<string>;
+  readonly allModels: boolean;
 }) {
   const rank = new Map(input.preferences?.modelOrder.map((slug, index) => [slug, index]));
   const visible = input.provider.models
-    .filter((model) => model.isCustom || !input.preferences?.hiddenModels.includes(model.slug))
+    .filter((model) => isCapabilityModelVisible(model, input.preferences))
     .toSorted((a, b) => (rank.get(a.slug) ?? rank.size) - (rank.get(b.slug) ?? rank.size));
   const { instanceId, driver, displayName } = input.provider;
   const providerText = `${instanceId} ${driver} ${displayName ?? ""}`.toLowerCase();
@@ -353,9 +359,10 @@ function listCapabilityModels(input: {
       const text = modelText(model);
       return modelTerms.every((term) => text.includes(term));
     });
-    const listed = matches.slice(0, LISTED_MODEL_LIMIT);
+    const listed = input.allModels ? matches : matches.slice(0, LISTED_MODEL_LIMIT);
     return { listed, omitted: matches.length - listed.length };
   }
+  if (input.allModels) return { listed: visible, omitted: 0 };
   const current = visible.filter((model) => !model.isLegacy);
   const shown = new Set(
     FULL_CATALOG_DRIVERS.has(input.provider.driver)
@@ -455,33 +462,6 @@ export const requireAdvertisedModel = (provider: ServerProvider, model: string) 
   );
 };
 
-function providerConstraints(
-  provider: ServerProvider | undefined,
-  supportsOrchestrationV2: boolean,
-): ReadonlyArray<string> {
-  const constraints: Array<string> = [];
-  if (!supportsOrchestrationV2) {
-    constraints.push("No V2 provider adapter is registered.");
-  }
-  if (provider === undefined) return constraints;
-  if (!isProviderAvailable(provider)) {
-    constraints.push(provider.unavailableReason ?? "Provider driver is unavailable.");
-  }
-  if (!provider.enabled) {
-    constraints.push("Provider instance is disabled.");
-    // Disabled snapshots contain placeholders for installation, health, and auth.
-    return constraints;
-  }
-  if (!provider.installed) constraints.push("Provider executable is not installed.");
-  if (provider.status === "error" || provider.status === "disabled") {
-    constraints.push(provider.message ?? `Provider status is ${provider.status}.`);
-  }
-  if (provider.auth.status === "unauthenticated") {
-    constraints.push("Provider is not authenticated.");
-  }
-  return constraints;
-}
-
 /** t3_thread_launch keeps a selection as given, so it can hold options its model does not have. */
 function knownOptions(
   options: ReadonlyArray<ProviderOptionSelection> | undefined,
@@ -489,41 +469,6 @@ function knownOptions(
 ): ReadonlyArray<ProviderOptionSelection> | undefined {
   if (options === undefined || descriptors === undefined) return options;
   return options.filter((option) => descriptors.some((descriptor) => descriptor.id === option.id));
-}
-
-/** Skip checks without descriptors; reject duplicate IDs because consumers disagree on precedence. */
-function invalidOptionSelections(
-  selections: ReadonlyArray<ProviderOptionSelection>,
-  descriptors: ReadonlyArray<ProviderOptionDescriptor> | undefined,
-): ReadonlyArray<string> {
-  const problems: Array<string> = [];
-  const seen = new Set<string>();
-  for (const selection of selections) {
-    if (seen.has(selection.id)) {
-      problems.push(`Option ${selection.id} was specified more than once.`);
-      continue;
-    }
-    seen.add(selection.id);
-    if (descriptors === undefined) continue;
-    const descriptor = descriptors.find((candidate) => candidate.id === selection.id);
-    if (descriptor === undefined) {
-      const known = descriptors.map((candidate) => candidate.id).join(", ");
-      problems.push(`Unknown option ${selection.id}; supported options: ${known || "none"}.`);
-      continue;
-    }
-    if (descriptor.type === "boolean" && typeof selection.value !== "boolean") {
-      problems.push(`Option ${selection.id} expects a boolean value.`);
-      continue;
-    }
-    if (
-      descriptor.type === "select" &&
-      !descriptor.options.some((choice) => choice.id === selection.value)
-    ) {
-      const choices = descriptor.options.map((choice) => choice.id).join(", ");
-      problems.push(`Option ${selection.id} must be one of: ${choices}.`);
-    }
-  }
-  return problems;
 }
 
 function taskStatusForRun(
@@ -1699,6 +1644,16 @@ const make = Effect.gen(function* () {
         ...(inheritedCandidate === undefined ? [] : [inheritedCandidate]),
         ...healthyCandidates.filter((candidate) => candidate !== inheritedCandidate),
       ];
+      const requestedModel = input.target?.model;
+      const requestedOptions = input.target?.options;
+      if (requestedModel !== undefined) {
+        orderedCandidates.sort(
+          (left, right) =>
+            Number(advertisedModel(right, requestedModel) !== undefined) -
+            Number(advertisedModel(left, requestedModel) !== undefined),
+        );
+      }
+      let firstEnabled: ServerProvider | undefined;
       for (const candidate of orderedCandidates) {
         const enabledForProject =
           input.skipProjectEnablementFilter === true ||
@@ -1706,11 +1661,29 @@ const make = Effect.gen(function* () {
             projectId: input.parent.thread.projectId,
             instanceId: candidate.instanceId,
           }));
-        if (enabledForProject) {
-          instanceId = candidate.instanceId;
-          break;
-        }
+        if (!enabledForProject) continue;
+        firstEnabled ??= candidate;
+        const model =
+          requestedModel ??
+          (candidate.instanceId === input.parent.thread.modelSelection.instanceId
+            ? input.parent.thread.modelSelection.model
+            : candidate.models[0]?.slug);
+        const advertised = model === undefined ? undefined : advertisedModel(candidate, model);
+        if (
+          model === undefined ||
+          (requestedModel !== undefined &&
+            candidate.models.length > 0 &&
+            advertised === undefined) ||
+          (requestedOptions !== undefined &&
+            invalidOptionSelections(requestedOptions, advertised?.capabilities?.optionDescriptors)
+              .length > 0)
+        )
+          continue;
+        instanceId = candidate.instanceId;
+        break;
       }
+      // Keep the specific model or option error when every enabled instance rejects the target.
+      instanceId ??= firstEnabled?.instanceId;
       if (instanceId === undefined) {
         return yield* failure(
           "provider_unavailable",
@@ -2808,6 +2781,7 @@ const make = Effect.gen(function* () {
             provider,
             preferences: settings.providerModelPreferences?.[provider.instanceId],
             searchTerms,
+            allModels: input.allModels === true,
             isPinned: (model) =>
               model.isCustom ||
               (inherited?.instanceId === provider.instanceId && inherited.model === model.slug) ||

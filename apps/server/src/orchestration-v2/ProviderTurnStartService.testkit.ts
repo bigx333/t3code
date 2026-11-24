@@ -15,6 +15,7 @@ import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
+import { disabledLayer } from "../pstack/PstackPack.testkit.ts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
@@ -30,6 +31,7 @@ export const layerNoTaskFolders = Layer.mock(TaskFolders.TaskFolders)({
 
 export const layer = Layer.mergeAll(
   layerNoTaskFolders,
+  disabledLayer,
   Layer.mock(GitWorkflow.GitWorkflowService)({
     pruneWorktrees: () => Effect.void,
     createWorktree: () => Effect.succeed({} as never),

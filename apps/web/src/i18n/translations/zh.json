@@ -12823,5 +12823,7 @@
   "a90a441fd0e08de7": "此环境",
   "7b4ebcc6bc4d5710": "将技能库恢复为默认设置",
   "a133e14731aa61a0": "技能库",
-  "ccdf81fb39ee7921": "测试版 共享技能 文件夹 代理 .agents/skills 链接 claude codex antigravity cursor opencode 一套 账户"
+  "ccdf81fb39ee7921": "测试版 共享技能 文件夹 代理 .agents/skills 链接 claude codex antigravity cursor opencode 一套 账户",
+  "7ae5a73f951efbee": "将 Lauren Tan 的 pstack 工作流作为技能提供给所有提供商。运行一次 {command} 即可选择模型。",
+  "31ab377f509c09bf": "将 pstack 恢复为默认设置"
 }

@@ -66,6 +66,7 @@ export function SettingsLabsRouteScreen() {
             "On a Mac, clone new worktrees from a checkout cached in the T3 home folder instead of writing every file. Uses Git’s normal checkout when it can’t. Turning it off deletes the cache.",
           )}
         />
+        <PstackSection />
         <SkillsLibrarySections />
         <AgentFeedbackSection />
       </ScrollView>
@@ -345,6 +346,60 @@ function AgentFeedbackSection() {
           outline of recent turns. Turn on Include the conversation there to add the messages of the
           turns the report is about.
         </T>
+      </Text>
+    </View>
+  );
+}
+
+/** One switch per connected machine, since each machine's own setting decides. */
+function PstackSection() {
+  const gt = useGT();
+  const { environments } = useEnvironments();
+  const connected = environments.filter(
+    (environment): environment is SettingsTarget =>
+      environment.connection.phase === "connected" && environment.serverConfig !== null,
+  );
+  const writable = useEnvironmentsWithScope(connected, AuthSettingsWriteScope);
+  const updateSettings = useAtomCommand(serverEnvironment.updateSettings, {
+    label: "pstack update",
+    reportFailure: true,
+  });
+  if (connected.length === 0) return null;
+  return (
+    <View className="gap-3">
+      <SettingsSection title="pstack">
+        {connected.map((environment) => {
+          const policy = environment.serverConfig.managedPolicy;
+          const managed = isManagedSettingPath(policy, "pstackEnabled");
+          return (
+            <SettingsSwitchRow
+              key={environment.environmentId}
+              icon="square.grid.2x2"
+              label={environment.label}
+              {...(managed
+                ? {
+                    subtitle: gt("Managed by {organization}.", {
+                      organization: policy?.organization,
+                    }),
+                  }
+                : {})}
+              value={environment.serverConfig.settings.pstackEnabled}
+              disabled={managed || !writable.has(environment.environmentId)}
+              onValueChange={(value) =>
+                void updateSettings({
+                  environmentId: environment.environmentId,
+                  input: { patch: { pstackEnabled: value } },
+                })
+              }
+            />
+          );
+        })}
+      </SettingsSection>
+      <Text className="px-2 text-sm text-foreground-muted">
+        {gt(
+          "Offer Lauren Tan's pstack workflows as skills in every provider. Run {command} once to choose models.",
+          { command: "$pstack:setup-pstack" },
+        )}
       </Text>
     </View>
   );

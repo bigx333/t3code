@@ -12813,5 +12813,7 @@
   "a90a441fd0e08de7": "This environment",
   "7b4ebcc6bc4d5710": "Reset skills library to default",
   "a133e14731aa61a0": "Skills library",
-  "ccdf81fb39ee7921": "beta shared skills folder agents .agents/skills link claude codex antigravity cursor opencode one set accounts"
+  "ccdf81fb39ee7921": "beta shared skills folder agents .agents/skills link claude codex antigravity cursor opencode one set accounts",
+  "7ae5a73f951efbee": "Offer Lauren Tan's pstack workflows as skills in every provider. Run {command} once to choose models.",
+  "31ab377f509c09bf": "Reset pstack to default"
 }

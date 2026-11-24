@@ -1,3 +1,4 @@
+import * as PstackPack from "./pstack/PstackPack.ts";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { WebSocket } from "@effect/platform-node/NodeWS";
@@ -898,6 +899,7 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(ServerLifecycleEvents.ServerLifecycleEvents)({}),
   Layer.mock(ServerRuntimeStartup.ServerRuntimeStartup)({}),
   Layer.mock(ServerSelfUpdate.ServerSelfUpdate)({}),
+  Layer.mock(PstackPack.PstackPack)({ catalog: Effect.undefined }),
   Layer.mock(SkillsLibrary.SkillsLibrary)({}),
   Layer.mock(NpmRelease.NpmRelease)({}),
   Layer.mock(SessionStore.SessionStore)({ cookieName: "config-test", legacyCookieName: undefined }),
@@ -1068,15 +1070,36 @@ it.effect.each([
       const finishDirect = yield* Deferred.make<void>();
       const directStopped = yield* Deferred.make<void>();
       const responses = yield* Queue.unbounded<ServerConfigStreamEvent>();
+      let editorDiscoveryCalls = 0;
       const configRpcServices = Layer.mergeAll(
         layerUnusedConfigRpcServices,
         Layer.mock(ExternalLauncher.ExternalLauncher)({
           resolveAvailableEditors: () =>
-            Deferred.succeed(discoveryStarted, undefined).pipe(
+            Effect.sync(() => {
+              editorDiscoveryCalls += 1;
+            }).pipe(
+              Effect.andThen(Deferred.succeed(discoveryStarted, undefined)),
               Effect.andThen(Deferred.await(finishDiscovery)),
               Effect.as([]),
             ),
           resolveFileManagerRevealKind: () => Effect.undefined,
+        }),
+        Layer.mock(PstackPack.PstackPack)({
+          catalog: settings.getSettings.pipe(
+            Effect.map((settings) =>
+              settings.pstackEnabled
+                ? [
+                    {
+                      name: "pstack:architect",
+                      path: "/pack/skills/architect/SKILL.md",
+                      scope: "t3",
+                      enabled: true,
+                    },
+                  ]
+                : undefined,
+            ),
+            Effect.orDie,
+          ),
         }),
         Layer.mock(ProviderRegistry.ProviderRegistry)({
           getProviders: Effect.succeed([]),
@@ -1235,6 +1258,21 @@ it.effect.each([
       }
       assert.isEmpty(expectedSettings);
       assert.isEmpty(expectedKeybindings);
+      const callsBeforeToggle = editorDiscoveryCalls;
+      for (const enabled of [false, true]) {
+        yield* settings.updateSettings({ pstackEnabled: enabled });
+        const event = yield* Queue.take(responses);
+        assert.equal(event.type, "snapshot");
+        if (event.type !== "snapshot")
+          return yield* Effect.die("Pstack toggle did not republish config");
+        assert.equal(editorDiscoveryCalls, callsBeforeToggle);
+        assert.equal(event.config.settings.pstackEnabled, enabled);
+        assert.deepEqual(
+          event.config.pstackSkills?.map((skill) => skill.name),
+          enabled ? ["pstack:architect"] : undefined,
+        );
+        yield* acknowledge;
+      }
       if (discovery === "pending") {
         yield* Deferred.await(remoteDiscoveryStarted);
         yield* Deferred.succeed(finishRemoteDiscovery, undefined);

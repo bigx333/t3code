@@ -5,6 +5,7 @@ import { remoteCacheUrl } from "./infra/task-cache/src/remoteCache.ts";
 import { cachedTestTasks } from "./scripts/lib/cached-tests.ts";
 
 const TEST_EXCLUDE = [
+  "**/pstack/upstream/**",
   "**/.repos/**",
   "**/.t3/**",
   "**/node_modules/**",
@@ -179,6 +180,7 @@ export default defineConfig({
   },
   fmt: {
     ignorePatterns: [
+      "packages/pstack/upstream/**",
       ".repos/**",
       "infra/task-cache/vendor/**",
       // Macroscope requires one glob per line; Markdown formatting corrupts it.
@@ -214,6 +216,7 @@ export default defineConfig({
   },
   lint: {
     ignorePatterns: [
+      "packages/pstack/upstream/**",
       ".repos",
       ".repos/**",
       "infra/task-cache/vendor/**",

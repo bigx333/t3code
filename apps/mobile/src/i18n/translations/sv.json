@@ -5641,5 +5641,7 @@
   "c79a0de85efbbebc": "Visar sökvägar och hur problemet åtgärdas",
   "e67fbd0fc176ebd6": "Beta: Färdighetsbibliotek på {environment}",
   "42c2e2c16fb65659": "färdighetsbibliotek",
-  "1e123a9806667790": "delade färdigheter"
+  "1e123a9806667790": "delade färdigheter",
+  "7ae5a73f951efbee": "Gör Lauren Tans pstack-arbetsflöden tillgängliga som färdigheter hos alla leverantörer. Kör {command} en gång för att välja modeller.",
+  "9de62c1c16a779f9": "pstack"
 }

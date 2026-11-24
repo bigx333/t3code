@@ -3,6 +3,7 @@ import * as Dialog from "../../components/ui/Dialog";
 import type {
   EnvironmentId,
   ProjectId,
+  ServerConfig,
   ServerProvider,
   ThreadId,
   ThreadPullRequestLink,
@@ -263,6 +264,7 @@ export function useComposerCommandMenu({
   pullRequestRepository = null,
   threadPullRequests,
   selectedProviderStatus,
+  pstackSkills,
   hasThread,
   hasCompactableConversation,
   offersUsageLimits = false,
@@ -288,6 +290,7 @@ export function useComposerCommandMenu({
   readonly pullRequestRepository?: string | null;
   readonly threadPullRequests?: ReadonlyArray<ThreadPullRequestLink>;
   readonly selectedProviderStatus: ServerProvider | null;
+  readonly pstackSkills: ServerConfig["pstackSkills"];
   readonly hasThread: boolean;
   readonly hasCompactableConversation: boolean;
   readonly offersUsageLimits?: boolean;
@@ -320,9 +323,7 @@ export function useComposerCommandMenu({
   const setSelection = (next: ComposerEditorSelection) =>
     setLocalSelection({ ownerKey, start: next.start, end: next.end });
 
-  const skills = selectedProviderStatus
-    ? resolveProviderSkillsForCwd(selectedProviderStatus, projectCwd)
-    : [];
+  const skills = resolveProviderSkillsForCwd(selectedProviderStatus, projectCwd, pstackSkills);
   const selectedProviderInstanceId = selectedProviderStatus?.instanceId;
   const refreshWorkspaceSnapshot = useAtomRefresh(
     environmentId && projectCwd && selectedProviderInstanceId

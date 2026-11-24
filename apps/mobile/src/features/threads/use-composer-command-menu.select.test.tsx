@@ -35,6 +35,7 @@ it("/model clears only its trigger and opens the model picker", async () => {
       environmentId: null,
       projectCwd: null,
       selectedProviderStatus: null,
+      pstackSkills: undefined,
       hasThread: true,
       hasCompactableConversation: false,
       onChangeDraftMessage,

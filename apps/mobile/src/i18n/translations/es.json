@@ -5635,5 +5635,7 @@
   "c79a0de85efbbebc": "Muestra las rutas y cómo solucionarlo",
   "e67fbd0fc176ebd6": "Beta: Biblioteca de skills en {environment}",
   "42c2e2c16fb65659": "biblioteca de habilidades",
-  "1e123a9806667790": "habilidades compartidas"
+  "1e123a9806667790": "habilidades compartidas",
+  "7ae5a73f951efbee": "Ofrece los flujos de trabajo pstack de Lauren Tan como skills en todos los proveedores. Ejecuta {command} una vez para elegir los modelos.",
+  "9de62c1c16a779f9": "pstack"
 }

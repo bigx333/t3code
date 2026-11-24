@@ -1,8 +1,11 @@
+import { parseModelsFile, resolveRoles } from "../pstack/pstackModels.ts";
+import { BUNDLED_CLAUDE_MODEL_CATALOG } from "../provider/ClaudeModelCatalog.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
+  DEFAULT_SERVER_SETTINGS,
   ContextTransferId,
   EnvironmentId,
   GitCommandError,
@@ -2399,10 +2402,13 @@ describe("OrchestratorMcpService provider resolution", () => {
       },
     ];
 
-    const capabilitiesWith = (search?: string) =>
+    const capabilitiesWith = (search?: string, allModels?: boolean) =>
       Effect.gen(function* () {
         const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-        return yield* service.capabilities(scope, search === undefined ? {} : { search });
+        return yield* service.capabilities(scope, {
+          ...(search === undefined ? {} : { search }),
+          ...(allModels === undefined ? {} : { allModels }),
+        });
       }).pipe(
         Effect.provide(
           layerOrchestratorService.pipe(
@@ -2505,6 +2511,24 @@ describe("OrchestratorMcpService provider resolution", () => {
           models: ["gpt-5"],
           omitted: 0,
         });
+        // allModels lifts the cap and keeps legacy models; hidden oc/m02 stays out.
+        assert.deepEqual(listing(yield* capabilitiesWith("oc/m", true))[1]?.models.length, 11);
+        assert.deepEqual(listing(yield* capabilitiesWith(undefined, true)), [
+          {
+            id: codexInstanceId,
+            models: ["gpt-6", "gpt-5", "gpt-4", "gpt-3", "my-alpha"],
+            omitted: 0,
+          },
+          {
+            id: opencodeInstanceId,
+            models: [
+              "oc/m12",
+              ...opencodeSlugs.filter((slug) => slug !== "oc/m02" && slug !== "oc/m12"),
+              "oc-custom",
+            ],
+            omitted: 0,
+          },
+        ]);
       }),
     );
 
@@ -3686,6 +3710,14 @@ describe("OrchestratorMcpService provider resolution", () => {
             candidateDriver: driver,
           },
           {
+            name: "requested-model-on-peer",
+            inheritedEnabled: true,
+            peerEnabled: true,
+            explicit: false,
+            selectedInstanceId: codexAltInstanceId,
+            candidateDriver: driver,
+          },
+          {
             name: "unavailable-inherited-falls-back-to-healthy-peer",
             inheritedEnabled: false,
             peerEnabled: true,
@@ -3816,7 +3848,12 @@ describe("OrchestratorMcpService provider resolution", () => {
                           ? codexInstanceId
                           : testCase.selectedInstanceId,
                     } as const)
-                  : ({ driverKind: testCase.candidateDriver } as const);
+                  : ({
+                      driverKind: testCase.candidateDriver,
+                      ...(testCase.name === "requested-model-on-peer"
+                        ? { model: "codex-alt-model" }
+                        : {}),
+                    } as const);
             if (testCase.selectedInstanceId === null) {
               const error = yield* service
                 .delegateTask(scope, {
@@ -4809,6 +4846,187 @@ describe("OrchestratorMcpService provider resolution", () => {
             );
           }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
         }
+      }),
+  );
+
+  it.effect.each([
+    { driver: "codex", model: "gpt-6-astra", effortId: "reasoningEffort" },
+    { driver: "pi", model: "openai/gpt-6-astra", effortId: "thinking" },
+    { driver: "opencode2", model: "openai/gpt-6-astra", effortId: "variant" },
+    { driver: "acpRegistry", model: "gpt-6-astra", effortId: "reasoningEffort" },
+  ])(
+    "pstack targets dispatch advertised $driver models and effort under either parent",
+    ({ driver, model, effortId }) =>
+      Effect.gen(function* () {
+        const claudeId = ProviderInstanceId.make("claudeAgent");
+        const targetId = ProviderInstanceId.make(driver === "codex" ? "codex" : `${driver}-work`);
+        const inheritedSpeed = driver === "codex" ? [{ id: "serviceTier", value: "priority" }] : [];
+        const providers: ServerProvider[] = [
+          {
+            ...providerSnapshot({
+              instanceId: claudeId,
+              driver: ProviderDriverKind.make("claudeAgent"),
+            }),
+            models: BUNDLED_CLAUDE_MODEL_CATALOG.models.map(({ model }) => model),
+          },
+          {
+            ...providerSnapshot({
+              instanceId: targetId,
+              driver: ProviderDriverKind.make(driver),
+            }),
+            models: [
+              {
+                slug: model,
+                name: "Astra",
+                isCustom: false,
+                capabilities: {
+                  optionDescriptors: [
+                    {
+                      id: effortId,
+                      label: "Effort",
+                      type: "select",
+                      currentValue: "medium",
+                      options: ["low", "medium", "high", "xhigh"].map((id) => ({ id, label: id })),
+                    },
+                    ...(driver === "codex"
+                      ? [
+                          {
+                            id: "serviceTier",
+                            label: "Tier",
+                            type: "select" as const,
+                            currentValue: "default",
+                            options: ["default", "priority"].map((id) => ({ id, label: id })),
+                          },
+                        ]
+                      : []),
+                  ],
+                },
+              },
+            ],
+          },
+        ];
+        const resolved = resolveRoles({
+          settings: DEFAULT_SERVER_SETTINGS,
+          file:
+            driver === "codex"
+              ? parseModelsFile(
+                  "architect runners: claudeAgent/claude-opus-5-5 effort=xhigh, codex/gpt-6-astra reasoningEffort=high",
+                )
+              : undefined,
+          defaults: [
+            { label: "architect runners", defaultValue: "claude-opus-5-5-xhigh, gpt-6-astra-high" },
+          ],
+          providers,
+          capableInstanceIds: new Set(providers.map((provider) => provider.instanceId)),
+        });
+        assert.deepEqual(resolved.diagnostics, []);
+        const results: unknown[][] = [];
+        for (const inherited of [
+          {
+            instanceId: claudeId,
+            model: "claude-opus-5-5",
+            options: [
+              { id: "effort", value: "low" },
+              { id: "fastMode", value: true },
+            ],
+          },
+          {
+            instanceId: targetId,
+            model,
+            options: [{ id: effortId, value: "xhigh" }, ...inheritedSpeed],
+          },
+        ]) {
+          const selections: unknown[] = [];
+          for (const seat of resolved.roles[0]!.seats) {
+            assert.equal(seat.kind, "target");
+            if (seat.kind !== "target") continue;
+            const target = seat.target;
+            const commands: unknown[] = [];
+            const task = {
+              id: taskId,
+              threadId: parentThreadId,
+              origin: "app_owned",
+              childThreadId,
+              providerInstanceId: target.providerInstanceId,
+              model: target.model,
+              status: "running",
+              result: null,
+            };
+            const dependencies = Layer.mergeAll(
+              NodeServices.layer,
+              NodeCrypto.layer,
+              Layer.mock(ThreadManagementService.ThreadManagementService)({
+                hasReceipt: () => Effect.succeed(false),
+                assertProviderInstanceEnabled: () => Effect.void,
+                getThreadRecords: (threadId) =>
+                  Effect.succeed(
+                    threadId === parentThreadId
+                      ? parentProjection(commands.length ? [task] : [], inherited)
+                      : childProjection,
+                  ),
+                dispatch: (command) =>
+                  Effect.sync(() => {
+                    commands.push(command);
+                    return {
+                      sequence: 1,
+                      storedEvents: [{ event: { type: "subagent.updated", payload: task } }],
+                    } as never;
+                  }),
+              }),
+              ServerSettings.layerTest(),
+              providerRegistryLayer(providers),
+              adapterRegistryLayer(providers.map((provider) => provider.instanceId)),
+              Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
+              Layer.mock(SecretRequests.SecretRequests)({}),
+              Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+              Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+            );
+            yield* Effect.gen(function* () {
+              const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+              yield* service.delegateTask(scope, {
+                task: "Design the change.",
+                target: yield* decodeTarget(target),
+                mode: "async",
+                clientRequestId: `pstack-${inherited.instanceId}-${target.providerInstanceId}`,
+              });
+            }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
+            selections.push((commands[0] as { modelSelection: unknown }).modelSelection);
+          }
+          results.push(selections);
+        }
+        assert.deepEqual(results, [
+          [
+            {
+              instanceId: claudeId,
+              model: "claude-opus-5-5",
+              options: [
+                { id: "effort", value: "xhigh" },
+                { id: "fastMode", value: true },
+                { id: "ultracode", value: false },
+              ],
+            },
+            {
+              instanceId: targetId,
+              model,
+              options: [{ id: effortId, value: "high" }],
+            },
+          ],
+          [
+            {
+              instanceId: claudeId,
+              model: "claude-opus-5-5",
+              options: [
+                { id: "effort", value: "xhigh" },
+                { id: "ultracode", value: false },
+              ],
+            },
+            {
+              instanceId: targetId,
+              model,
+              options: [{ id: effortId, value: "high" }, ...inheritedSpeed],
+            },
+          ],
+        ]);
       }),
   );
 

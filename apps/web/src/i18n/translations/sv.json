@@ -12811,5 +12811,7 @@
   "a90a441fd0e08de7": "Den här miljön",
   "7b4ebcc6bc4d5710": "Återställ färdighetsbiblioteket till standard",
   "a133e14731aa61a0": "Färdighetsbibliotek",
-  "ccdf81fb39ee7921": "beta delade färdigheter mapp agenter .agents/skills länk claude codex antigravity cursor opencode en uppsättning konton"
+  "ccdf81fb39ee7921": "beta delade färdigheter mapp agenter .agents/skills länk claude codex antigravity cursor opencode en uppsättning konton",
+  "7ae5a73f951efbee": "Gör Lauren Tans pstack-arbetsflöden tillgängliga som färdigheter hos alla leverantörer. Kör {command} en gång för att välja modeller.",
+  "31ab377f509c09bf": "Återställ pstack till standard"
 }

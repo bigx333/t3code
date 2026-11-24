@@ -12745,5 +12745,7 @@
   "a90a441fd0e08de7": "この環境",
   "7b4ebcc6bc4d5710": "スキルライブラリを既定値に戻す",
   "a133e14731aa61a0": "スキルライブラリ",
-  "ccdf81fb39ee7921": "ベータ 共有スキル フォルダー エージェント .agents/skills リンク claude codex antigravity cursor opencode 1つのセット アカウント shared skills"
+  "ccdf81fb39ee7921": "ベータ 共有スキル フォルダー エージェント .agents/skills リンク claude codex antigravity cursor opencode 1つのセット アカウント shared skills",
+  "7ae5a73f951efbee": "Lauren Tan の pstack ワークフローをすべてのプロバイダーでスキルとして利用できます。モデルを選択するには {command} を一度実行してください。",
+  "31ab377f509c09bf": "pstack を既定値に戻す"
 }

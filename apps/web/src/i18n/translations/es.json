@@ -12799,5 +12799,7 @@
   "a90a441fd0e08de7": "Este entorno",
   "7b4ebcc6bc4d5710": "Restablecer la biblioteca de habilidades a su valor predeterminado",
   "a133e14731aa61a0": "Biblioteca de skills",
-  "ccdf81fb39ee7921": "beta skills compartidas carpeta agents .agents/skills enlazar claude codex antigravity cursor opencode un conjunto cuentas"
+  "ccdf81fb39ee7921": "beta skills compartidas carpeta agents .agents/skills enlazar claude codex antigravity cursor opencode un conjunto cuentas",
+  "7ae5a73f951efbee": "Ofrece los flujos de trabajo pstack de Lauren Tan como skills en todos los proveedores. Ejecuta {command} una vez para elegir los modelos.",
+  "31ab377f509c09bf": "Restablecer pstack a su valor predeterminado"
 }

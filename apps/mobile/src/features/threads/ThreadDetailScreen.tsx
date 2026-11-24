@@ -1280,14 +1280,11 @@ function ThreadDetailBody(
       : { width: Math.max(0, columnWidth - controlInsets.left - controlInsets.right) };
   const selectedInstanceId = props.selectedThread.modelSelection.instanceId;
   useAtomMount(threadStreamHaptics(props.selectedThreadDetailRef));
-  const selectedProviderSkills = (() => {
-    const provider = props.serverConfig?.providers.find(
-      (candidate) => candidate.instanceId === selectedInstanceId,
-    );
-    return provider
-      ? resolveProviderSkillsForCwd(provider, props.threadCwd ?? props.projectWorkspaceRoot)
-      : [];
-  })();
+  const selectedProviderSkills = resolveProviderSkillsForCwd(
+    props.serverConfig?.providers.find((candidate) => candidate.instanceId === selectedInstanceId),
+    props.threadCwd ?? props.projectWorkspaceRoot,
+    props.serverConfig?.pstackSkills,
+  );
 
   const currentPendingApprovals = () =>
     props.selectedThreadDetailRef === null

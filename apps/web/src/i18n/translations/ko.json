@@ -12741,5 +12741,7 @@
   "a90a441fd0e08de7": "이 환경",
   "7b4ebcc6bc4d5710": "스킬 라이브러리를 기본값으로 재설정",
   "a133e14731aa61a0": "스킬 라이브러리",
-  "ccdf81fb39ee7921": "베타 공유 스킬 폴더 에이전트 .agents/skills 링크 claude codex antigravity cursor opencode 하나의 세트 계정"
+  "ccdf81fb39ee7921": "베타 공유 스킬 폴더 에이전트 .agents/skills 링크 claude codex antigravity cursor opencode 하나의 세트 계정",
+  "7ae5a73f951efbee": "모든 제공자에서 Lauren Tan의 pstack 워크플로를 스킬로 사용할 수 있습니다. {command} 명령을 한 번 실행해 모델을 선택하세요.",
+  "31ab377f509c09bf": "pstack을 기본값으로 재설정"
 }

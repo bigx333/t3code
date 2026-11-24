@@ -3,6 +3,7 @@ import { managedCapabilityDenial } from "@t3tools/client-runtime/contract-labels
 import { useAuth } from "@clerk/react";
 import { Link } from "@tanstack/react-router";
 import { AgentFeedbackMode } from "@t3tools/contracts";
+import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import { T, useGT, useMessages } from "gt-react";
 
 import { hasCloudPublicConfig } from "~/cloud/publicConfig";
@@ -11,7 +12,12 @@ import { Button } from "../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
 import { ScopedSwitch } from "./ScopedSwitch";
-import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
+import {
+  SettingResetButton,
+  SettingsPageContainer,
+  SettingsRow,
+  SettingsSection,
+} from "./settingsLayout";
 import { useSearchableSetting } from "./settingsSearch";
 import { SkillsLibraryRows } from "./SkillsLibrarySettings";
 import {
@@ -36,6 +42,7 @@ export function LabsSettingsPanel() {
         <PromptSuggestionsRow />
         <SimlockHostsRow />
         <FastWorktreeCheckoutRow />
+        <PstackRow />
         <SkillsLibraryRows />
         <AgentFeedbackRow />
       </SettingsSection>
@@ -322,6 +329,42 @@ function FastWorktreeCheckoutRow() {
           checked={settings.fastWorktreeCheckout}
           onCheckedChange={(checked) => updateSettings({ fastWorktreeCheckout: Boolean(checked) })}
           aria-label={gt("Fast worktree checkout")}
+        />
+      }
+    />
+  );
+}
+
+function PstackRow() {
+  const searchableSetting = useSearchableSetting();
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  const gt = useGT();
+  return (
+    <SettingsRow
+      serverScoped
+      {...searchableSetting("pstack")}
+      settingKeys={["pstackEnabled"]}
+      description={gt(
+        "Offer Lauren Tan's pstack workflows as skills in every provider. Run {command} once to choose models.",
+        { command: "$pstack:setup-pstack" },
+      )}
+      resetAction={
+        settings.pstackEnabled !== DEFAULT_UNIFIED_SETTINGS.pstackEnabled ? (
+          <SettingResetButton
+            ariaLabel={gt("Reset pstack to default")}
+            onClick={() =>
+              updateSettings({ pstackEnabled: DEFAULT_UNIFIED_SETTINGS.pstackEnabled })
+            }
+          />
+        ) : null
+      }
+      control={
+        <ScopedSwitch
+          settingKeys={["pstackEnabled"]}
+          checked={settings.pstackEnabled}
+          onCheckedChange={(checked) => updateSettings({ pstackEnabled: Boolean(checked) })}
+          aria-label="pstack"
         />
       }
     />

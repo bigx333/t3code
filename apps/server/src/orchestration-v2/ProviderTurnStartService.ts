@@ -1,4 +1,6 @@
 import { classifyCodexManagedError } from "../provider/CodexManagedErrors.ts";
+import * as PstackPack from "../pstack/PstackPack.ts";
+import { referencesPstack } from "../pstack/composer.ts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import { expandAssistantCitationsForProvider } from "@t3tools/shared/assistantCitations";
@@ -272,6 +274,7 @@ export class ProviderTurnStartServiceV2 extends Context.Service<
 export const layer: Layer.Layer<
   ProviderTurnStartServiceV2,
   never,
+  | PstackPack.PstackPack
   | EventSink.EventSinkV2
   | ContextHandoffService.ContextHandoffServiceV2
   | IdAllocator.IdAllocatorV2
@@ -291,6 +294,7 @@ export const layer: Layer.Layer<
 > = Layer.effect(
   ProviderTurnStartServiceV2,
   Effect.gen(function* () {
+    const pstack = yield* PstackPack.PstackPack;
     const eventSink = yield* EventSink.EventSinkV2;
     const turnAnalytics = yield* ProviderUsageAnalytics.ProviderTurnAnalytics;
     const contextHandoffService = yield* ContextHandoffService.ContextHandoffServiceV2;
@@ -1017,12 +1021,26 @@ export const layer: Layer.Layer<
       });
       let effectiveHandoffs = handoffs;
       let resumeFellBack = false;
+      const composerInput = {
+        text: providerMessage.text,
+        records: providerMessage.context?.records ?? [],
+      };
+      const pstackComposer = referencesPstack(composerInput, message)
+        ? yield* pstack.expandComposer(
+            {
+              ...composerInput,
+              projectId: projection.thread.projectId,
+              parentModelSelection: projection.thread.modelSelection,
+              supportsOrchestrationTools:
+                session.supportsT3Tools ??
+                session.providerSession.capabilities.tools.supportsMcpTools,
+            },
+            message,
+          )
+        : composerInput;
       const messageText = withMessageSenderNote(
         providerMessage,
-        projectComposerContextForProvider({
-          text: providerMessage.text,
-          records: providerMessage.context?.records ?? [],
-        }),
+        projectComposerContextForProvider(pstackComposer),
       );
       const slashCommand = isSlashCommandMessage(providerMessage);
       const goalDriver =

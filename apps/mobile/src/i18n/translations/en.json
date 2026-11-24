@@ -5643,5 +5643,7 @@
   "c79a0de85efbbebc": "Shows paths and how to fix it",
   "e67fbd0fc176ebd6": "Beta: Skills library on {environment}",
   "42c2e2c16fb65659": "skills library",
-  "1e123a9806667790": "shared skills"
+  "1e123a9806667790": "shared skills",
+  "7ae5a73f951efbee": "Offer Lauren Tan's pstack workflows as skills in every provider. Run {command} once to choose models.",
+  "9de62c1c16a779f9": "pstack"
 }

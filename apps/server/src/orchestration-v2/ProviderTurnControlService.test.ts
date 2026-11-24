@@ -1,5 +1,9 @@
 import { assert, it } from "@effect/vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  ComposerContextId,
+  EnvironmentId,
+  ServerSettingsError,
   MessageId,
   type ModelSelection,
   NodeId,
@@ -19,6 +23,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -31,6 +36,9 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
+import { formatComposerContextReference } from "@t3tools/shared/composerContextReferences";
+import { claudeProvider, disabledLayer, makeFixture } from "../pstack/PstackPack.testkit.ts";
+import * as ServerSettings from "../serverSettings.ts";
 
 const driver = ProviderDriverKind.make("codex");
 const providerInstanceId = ProviderInstanceId.make("codex");
@@ -323,6 +331,8 @@ it.effect(
       );
       const layerSessionManager = layerSessions(oldSessionId, runtime);
       const layerControl = ProviderTurnControlService.layer.pipe(
+        Layer.provide(disabledLayer),
+        Layer.provide(ServerSettings.layerTest()),
         Layer.provide(
           Layer.mergeAll(
             layerProjection,
@@ -403,6 +413,8 @@ it.effect("steers a running turn with its sender and the thread's MCP app model 
         Effect.sync(() => void steered.push(input)),
     } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime;
     const layerControl = ProviderTurnControlService.layer.pipe(
+      Layer.provide(disabledLayer),
+      Layer.provide(ServerSettings.layerTest()),
       Layer.provide(
         Layer.mergeAll(
           layerProjectionStore(() =>
@@ -464,4 +476,281 @@ it.effect("steers a running turn with its sender and the thread's MCP app model 
       { key: "mcp_app_turn-item_call-1", text: "Pressed: blue" },
     ]);
   }),
+);
+
+it.effect.each([
+  true,
+  false,
+  "agent-authored",
+  "local-peer",
+  "linked-peer",
+  "notification",
+  "delegated-completion",
+  "no-mention",
+  "plain-name",
+  "record-only",
+  "project-disabled",
+  "pack-failure",
+  "settings-failure",
+] as const)("steer consumes pstack before native projection, enabled=%s", (mode) =>
+  Effect.gen(function* () {
+    const enabled = mode !== false;
+    const authoredByUser = !["agent-authored", "local-peer", "linked-peer"].includes(String(mode));
+    const shouldExpand =
+      enabled &&
+      authoredByUser &&
+      mode !== "notification" &&
+      mode !== "delegated-completion" &&
+      mode !== "no-mention" &&
+      mode !== "plain-name";
+    const fixture = yield* makeFixture(
+      [claudeProvider],
+      mode === "settings-failure"
+        ? Layer.mock(ServerSettings.ServerSettingsService)({
+            getSettings: Effect.fail(
+              new ServerSettingsError({
+                operation: "read-file",
+                settingsPath: "/fixture/settings.json",
+              }),
+            ),
+          })
+        : undefined,
+    );
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.makeDirectory(`${fixture.stateDir}/pstack`, { recursive: true });
+    yield* fs.writeFileString(
+      `${fixture.stateDir}/pstack/models.md`,
+      "architect runners: claudeAgent/claude-opus-5-5 effort=xhigh fastMode=false",
+    );
+    if (mode === "pack-failure") yield* fs.remove(fixture.sourceRoot, { recursive: true });
+    const now = yield* DateTime.now;
+    const threadId = ThreadId.make("pstack-steer");
+    const providerSessionId = ProviderSessionId.make("pstack-steer-session");
+    const providerThreadId = ProviderThreadId.make("pstack-steer-thread");
+    const providerTurnId = ProviderTurnId.make("pstack-steer-turn");
+    const messageId = MessageId.make("pstack-steer-message");
+    const runId = RunId.make("pstack-steer-run");
+    const attemptId = RunAttemptId.make("pstack-steer-attempt");
+    const senderThreadId = ThreadId.make("thread:peer-coordinator");
+    const linkedSender = {
+      environmentId: EnvironmentId.make("environment:peer-coordinator"),
+      threadId: senderThreadId,
+      title: "Peer coordinator",
+    };
+    const providerThread: OrchestrationV2ProviderThread = {
+      id: providerThreadId,
+      driver,
+      providerInstanceId,
+      providerSessionId,
+      appThreadId: threadId,
+      ownerNodeId: null,
+      nativeThreadRef: null,
+      nativeConversationHeadRef: null,
+      status: "not_loaded",
+      firstRunOrdinal: 1,
+      lastRunOrdinal: 1,
+      handoffIds: [],
+      forkedFrom: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const projection = makeProjection({
+      now,
+      threadId,
+      providerThread,
+      providerTurnId,
+      attemptId,
+    });
+    const record = {
+      version: 1 as const,
+      kind: "skill" as const,
+      contextId: ComposerContextId.make("pstack-steer"),
+      name: "pstack:architect",
+      label: "architect",
+    };
+    const native = {
+      ...record,
+      contextId: ComposerContextId.make("native-steer"),
+      name: "native:review",
+      label: "review",
+    };
+    const received: string[] = [];
+    const receivedMessages: ProviderAdapter.ProviderAdapterV2TurnMessage[] = [];
+    let threadReads = 0;
+    const runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime = {
+      instanceId: providerInstanceId,
+      driver,
+      providerSessionId,
+      providerSession: {
+        id: providerSessionId,
+        driver,
+        providerInstanceId,
+        status: "running",
+        cwd: "/workspace",
+        model: modelSelection.model,
+        capabilities: CodexProviderCapabilitiesV2,
+        createdAt: now,
+        updatedAt: now,
+        lastError: null,
+      },
+      events: Stream.empty,
+      ensureThread: () => Effect.die("unused ensureThread"),
+      resumeThread: () => Effect.die("unused resumeThread"),
+      startTurn: () => Effect.die("unused startTurn"),
+      steerTurn: (input) =>
+        Effect.sync(() => {
+          received.push(input.message.text);
+          receivedMessages.push(input.message);
+        }),
+      interruptTurn: () => Effect.die("unused interruptTurn"),
+      respondToRuntimeRequest: () => Effect.die("unused respondToRuntimeRequest"),
+      readThreadSnapshot: () => Effect.die("unused readThreadSnapshot"),
+      rollbackThread: () => Effect.die("unused rollbackThread"),
+      forkThread: () => Effect.die("unused forkThread"),
+    };
+    const layers = ProviderTurnControlService.layer.pipe(
+      Layer.provide(McpAppModelContext.layerEmpty),
+      Layer.provide(
+        Layer.mergeAll(
+          fixture.layer,
+          fixture.settingsLayer,
+          Layer.mock(EventSink.EventSinkV2)({}),
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getThread: () =>
+              Effect.sync(() => {
+                threadReads += 1;
+                return projection.thread;
+              }),
+            getThreadRecords: () =>
+              Effect.succeed({
+                ...projection,
+                runs: [
+                  {
+                    id: runId,
+                    threadId,
+                    ordinal: 1,
+                    providerInstanceId,
+                    modelSelection,
+                    providerThreadId,
+                    userMessageId: messageId,
+                    rootNodeId: null,
+                    activeAttemptId: attemptId,
+                    status: "running" as const,
+                    requestedAt: now,
+                    startedAt: now,
+                    completedAt: null,
+                    checkpointId: null,
+                    contextHandoffId: null,
+                    delegatedCompletion: {
+                      disposition: "open" as const,
+                      nextGeneration: 2,
+                      delivery: { messageId, generation: 1, taskIds: [NodeId.make("child")] },
+                    },
+                  },
+                ],
+              }),
+            getProviderControlContext: () =>
+              Effect.succeed({
+                providerThread,
+                providerTurn: projection.providerTurns[0],
+                attempt: undefined,
+                run: { id: runId } as OrchestrationV2ThreadProjection["runs"][number],
+                message: {
+                  id: messageId,
+                  text:
+                    mode === "plain-name"
+                      ? `Discuss pstack:architect ${formatComposerContextReference(native)}`
+                      : mode === "no-mention"
+                        ? `Refine ${formatComposerContextReference(native)}`
+                        : `${mode === "record-only" ? "" : "Result mentions $pstack:architect then "}${formatComposerContextReference(record)} refine ${formatComposerContextReference(native)}`,
+                  context: {
+                    version: 1,
+                    records:
+                      mode === "no-mention" || mode === "plain-name" ? [native] : [record, native],
+                  },
+                  ...(mode === "notification"
+                    ? {
+                        notification: {
+                          source: { kind: "command" },
+                          outcome: "completed",
+                          summary: "Task finished",
+                        },
+                      }
+                    : {}),
+                  ...(mode === "delegated-completion"
+                    ? {
+                        delegatedCompletion: {
+                          parentRunId: runId,
+                          generation: 1,
+                          taskIds: [NodeId.make("child")],
+                        },
+                      }
+                    : {}),
+                  attachments: [],
+                  createdBy: authoredByUser ? "user" : "agent",
+                  creationSource: authoredByUser ? "web" : "mcp",
+                  ...(mode === "local-peer" ? { senderThreadId } : {}),
+                  ...(mode === "linked-peer" ? { linkedSender } : {}),
+                } as unknown as OrchestrationV2ThreadProjection["messages"][number],
+              }),
+          }),
+          Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+            get: () => Effect.succeedSome(runtime),
+          }),
+        ),
+      ),
+    );
+    yield* Effect.gen(function* () {
+      if (mode !== "settings-failure")
+        yield* (yield* ServerSettings.ServerSettingsService).updateSettings({
+          pstackEnabled: enabled,
+          ...(mode === "project-disabled"
+            ? {
+                projectSettingsOverrides: {
+                  [projection.thread.projectId]: {
+                    providerInstances: { [claudeProvider.instanceId]: { enabled: false } },
+                  },
+                },
+              }
+            : {}),
+        });
+      yield* (yield* ProviderTurnControlService.ProviderTurnControlServiceV2).steer({
+        threadId,
+        providerSessionId,
+        providerThreadId,
+        providerTurnId,
+        messageId,
+      });
+    }).pipe(Effect.provide(Layer.merge(layers, fixture.settingsLayer)));
+    const locates = mode === "plain-name";
+    assert.equal(threadReads, shouldExpand || locates ? 1 : 0);
+    assert.lengthOf(received, 1);
+    assert.include(received[0]!, "native:review");
+    if (mode === "local-peer" || mode === "linked-peer") {
+      assert.include(received[0]!, senderThreadId);
+      assert.include(received[0]!, "agent");
+      if (mode === "linked-peer") {
+        assert.include(received[0]!, linkedSender.environmentId);
+      } else {
+        assert.equal(receivedMessages[0]!.senderThreadId, senderThreadId);
+      }
+    }
+    if (mode === "pack-failure" || mode === "settings-failure") {
+      assert.include(received[0]!, "pstack is unavailable:");
+      assert.include(received[0]!, "$pstack:architect");
+      assert.notInclude(received[0]!, "<t3_pstack>");
+    } else if (shouldExpand) {
+      if (mode === "project-disabled")
+        assert.include(received[0]!, "Fallback: architect runners seat 1");
+      else assert.notInclude(received[0]!, "Fallback:");
+      assert.include(received[0]!, "<t3_pstack>");
+      assert.notInclude(received[0]!, "$pstack:architect");
+    } else if (locates) {
+      assert.include(received[0]!, "pstack is built into T3 Code.");
+      assert.notInclude(received[0]!, "Resolved roles");
+    } else {
+      assert.notInclude(received[0]!, "<t3_pstack>");
+      if (mode !== "no-mention") assert.include(received[0]!, "pstack:architect");
+    }
+  }).pipe(Effect.provide(NodeServices.layer)),
 );

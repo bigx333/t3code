@@ -5641,5 +5641,7 @@
   "c79a0de85efbbebc": "Zeigt Pfade und Hinweise zur Behebung",
   "e67fbd0fc176ebd6": "Beta: Skill-Bibliothek auf {environment}",
   "42c2e2c16fb65659": "Skill-Bibliothek",
-  "1e123a9806667790": "gemeinsame Skills"
+  "1e123a9806667790": "gemeinsame Skills",
+  "7ae5a73f951efbee": "Stelle die pstack-Workflows von Lauren Tan bei jedem Anbieter als Skills bereit. Führe {command} einmal aus, um die Modelle auszuwählen.",
+  "9de62c1c16a779f9": "pstack"
 }

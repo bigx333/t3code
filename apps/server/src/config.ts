@@ -17,7 +17,9 @@ import {
   processServiceInstanceId,
   type SignalExport,
 } from "@t3tools/shared/observability";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
+import { PSTACK_SOURCE_ROOT_ENV } from "@t3tools/shared/pstack";
 import { type ReleaseChannel, releaseResourceAttributes } from "@t3tools/shared/releaseResource";
 import packageJson from "../package.json" with { type: "json" };
 
@@ -298,3 +300,16 @@ export const resolveStaticDir = Effect.fn(function* () {
   }
   return undefined;
 });
+
+export const resolvePstackSourceRoot = Effect.fn("ServerConfig.resolvePstackSourceRoot")(
+  function* () {
+    const { join, resolve } = yield* Path.Path;
+    const fs = yield* FileSystem.FileSystem;
+    const environment = yield* HostProcess.Environment;
+    const override = environment[PSTACK_SOURCE_ROOT_ENV];
+    if (override && (yield* fs.exists(join(override, "UPSTREAM.json")))) return resolve(override);
+    const bundled = resolve(join(import.meta.dirname, "pstack"));
+    if (yield* fs.exists(join(bundled, "UPSTREAM.json"))) return bundled;
+    return resolve(join(import.meta.dirname, "../../../packages/pstack"));
+  },
+);

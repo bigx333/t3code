@@ -59,6 +59,9 @@ import {
   WindowsDesktopBuildPrerequisitesMissingError,
   WindowsPackagedPayloadValidationError,
   stageCursorSdkPlatformPackages,
+  stageDesktopServerDist,
+  prunePackagedPstackTestFixtures,
+  DESKTOP_EXTRA_RESOURCES,
   WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT,
   WINDOWS_SERVER_ASAR_IGNORE_GLOBS,
   WINDOWS_SERVER_ASAR_RESOURCE,
@@ -73,6 +76,7 @@ import {
   releasePackageFiles,
 } from "./update-release-package-versions.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { pstackPackEntries } from "@t3tools/pstack";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 
 const encodeModuleUrl = Schema.encodeEffect(Schema.fromJsonString(Schema.String));
@@ -243,6 +247,79 @@ const makePackagedAppFixture = Effect.fn("test.makePackagedAppFixture")(function
 });
 
 it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
+  it.effect.each(["mac", "linux", "win"] as const)(
+    "stages pstack at the extraResources source on %s",
+    (platform) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pstack-stage-" });
+        const serverDistDir = path.join(root, "dist");
+        const stageAppDir = path.join(root, "app");
+        const files = [
+          "UPSTREAM.json",
+          "upstream/.gitignore",
+          "upstream/skills/poteto-mode/scripts/bun.lock",
+        ];
+        const testFixture = "upstream/skills/statechart/scripts/test/corpus/Counter/chart.mmd";
+        const testFixturePath = path.join(serverDistDir, "pstack", testFixture);
+        yield* fs.makeDirectory(path.dirname(testFixturePath), { recursive: true });
+        yield* fs.writeFileString(testFixturePath, "test-only fixture");
+        for (const file of files) {
+          const source = path.join(serverDistDir, "pstack", file);
+          yield* fs.makeDirectory(path.dirname(source), { recursive: true });
+          yield* fs.writeFileString(source, file);
+        }
+        yield* fs.writeFileString(path.join(serverDistDir, "bin.mjs"), "server");
+        yield* stageDesktopServerDist({ platform, serverDistDir, stageAppDir });
+        const packagedFixture = path.join(stageAppDir, "apps/server/dist/pstack", testFixture);
+        assert.isFalse(yield* fs.exists(packagedFixture));
+        assert.isTrue(yield* fs.exists(testFixturePath));
+        for (const file of files) {
+          assert.equal(
+            yield* fs.readFileString(path.join(stageAppDir, "apps/server/dist/pstack", file)),
+            file,
+          );
+        }
+        assert.equal(
+          yield* fs.exists(path.join(stageAppDir, "apps/server/dist/bin.mjs")),
+          platform !== "win",
+        );
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect.each(["mac", "linux", "win"] as const)(
+    "ships pstack outside asar without filtering runtime lockfiles on %s",
+    (platform) =>
+      Effect.gen(function* () {
+        const config = yield* createBuildConfig(
+          platform,
+          "dir",
+          "1.2.3",
+          false,
+          false,
+          undefined,
+          undefined,
+        );
+        const resource = { from: "apps/server/dist/pstack", to: "pstack" };
+        assert.deepInclude(DESKTOP_EXTRA_RESOURCES, resource);
+        assert.deepInclude(config.extraResources as unknown[], resource);
+        for (const file of ["UPSTREAM.json", "upstream/skills/poteto-mode/scripts/bun.lock"]) {
+          const packagedPath = `${resource.from}/${file}`;
+          assert.isTrue(
+            DESKTOP_FILE_EXCLUSIONS.some((glob) =>
+              NodePath.matchesGlob(packagedPath, glob.slice(1)),
+            ),
+          );
+          assert.isTrue(
+            WINDOWS_SERVER_ASAR_IGNORE_GLOBS.some((glob) =>
+              NodePath.matchesGlob(packagedPath, glob),
+            ),
+          );
+        }
+      }),
+  );
+
   it.effect("rejects overlapping builds from another process until restoration finishes", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -1386,6 +1463,36 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.isAbove(error.fileCount ?? 0, 2);
       }),
     ),
+  );
+
+  it.effect("allows pstack within the Windows payload budget", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const fixture = yield* makeWindowsPayloadFixture({ copyUnpackedNatives: true });
+      const packagedPstackDir = path.join(fixture.packagedAppDir, "resources/pstack");
+      yield* fs.copy(
+        path.join(import.meta.dirname, "../packages/pstack/upstream"),
+        path.join(packagedPstackDir, "upstream"),
+      );
+      yield* fs.copy(
+        path.join(import.meta.dirname, "../packages/pstack/UPSTREAM.json"),
+        path.join(packagedPstackDir, "UPSTREAM.json"),
+      );
+      yield* prunePackagedPstackTestFixtures(packagedPstackDir);
+      const scriptsDir = path.join(packagedPstackDir, "upstream/skills/statechart/scripts");
+      assert.isFalse(yield* fs.exists(path.join(scriptsDir, "test")));
+      assert.isTrue(yield* fs.exists(path.join(scriptsDir, "statechart.ts")));
+      for (const { sourcePath } of pstackPackEntries(packagedPstackDir)) {
+        assert.isTrue(yield* fs.exists(sourcePath), sourcePath);
+      }
+      yield* validateWindowsPackagedPayload({
+        stageDistDir: fixture.stageDistDir,
+        appExecutableName: fixture.appExecutableName,
+        targetArch: "x64",
+        appVersion: WINDOWS_PAYLOAD_FIXTURE_VERSION,
+      });
+    }).pipe(Effect.scoped),
   );
 
   it.effect("rejects a sidecar whose extracted server bundle cannot resolve", () =>

@@ -159,6 +159,7 @@ function setup() {
     lockedProvider: null,
     providerStatuses: [provider],
     providerCatalogKnown: true,
+    pstackSkills: [],
     activeProjectDefaultModelSelection: null,
     activeThreadModelSelection: thread.modelSelection,
     activeProjectId: thread.projectId,

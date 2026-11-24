@@ -12804,5 +12804,7 @@
   "a90a441fd0e08de7": "Diese Umgebung",
   "7b4ebcc6bc4d5710": "Skill-Bibliothek auf Standard zurücksetzen",
   "a133e14731aa61a0": "Skill-Bibliothek",
-  "ccdf81fb39ee7921": "beta gemeinsame skills ordner agents .agents/skills verknüpfen claude codex antigravity cursor opencode ein satz konten"
+  "ccdf81fb39ee7921": "beta gemeinsame skills ordner agents .agents/skills verknüpfen claude codex antigravity cursor opencode ein satz konten",
+  "7ae5a73f951efbee": "Stelle die pstack-Workflows von Lauren Tan bei jedem Anbieter als Skills bereit. Führe {command} einmal aus, um die Modelle auszuwählen.",
+  "31ab377f509c09bf": "pstack auf Standard zurücksetzen"
 }

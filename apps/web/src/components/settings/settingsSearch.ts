@@ -591,6 +591,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("beta fast worktree checkout clone apfs copy-on-write cache macos speed")],
   },
   {
+    id: "pstack",
+    title: "pstack",
+    to: "/settings/labs",
+    scope: "environment-defaults",
+    searchTerms: ["lauren tan skills workflows plugin pack architect setup models"],
+  },
+  {
     id: "skills-library",
     title: msg("Skills library"),
     to: "/settings/labs",

@@ -495,6 +495,7 @@ export function layerWithRegistry<Error>(
     ),
   );
   const layerProviderTurnControlServiceProvided = ProviderTurnControlService.layer.pipe(
+    Layer.provide(layerServerSettings),
     Layer.provide(
       Layer.mergeAll(
         layerEventSinkProvided,

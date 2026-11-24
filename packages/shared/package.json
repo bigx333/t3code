@@ -611,6 +611,10 @@
       "types": "./src/skillFrontmatter.ts",
       "import": "./src/skillFrontmatter.ts"
     },
+    "./pstack": {
+      "types": "./src/pstack.ts",
+      "import": "./src/pstack.ts"
+    },
     "./speech": {
       "types": "./src/speech.ts",
       "import": "./src/speech.ts"

@@ -1,3 +1,6 @@
+import * as ServerSettings from "../serverSettings.ts";
+import { referencesPstack } from "../pstack/composer.ts";
+import * as PstackPack from "../pstack/PstackPack.ts";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
   MessageId,
@@ -118,10 +121,14 @@ export const layer: Layer.Layer<
   | McpAppModelContext.McpAppModelContext
   | ProjectionStore.ProjectionStoreV2
   | ProviderSessionManager.ProviderSessionManagerV2
+  | PstackPack.PstackPack
+  | ServerSettings.ServerSettingsService
 > = Layer.effect(
   ProviderTurnControlServiceV2,
   Effect.gen(function* () {
     const eventSink = yield* EventSink.EventSinkV2;
+    const pstack = yield* PstackPack.PstackPack;
+    const settings = yield* ServerSettings.ServerSettingsService;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const mcpAppModelContext = yield* McpAppModelContext.McpAppModelContext;
@@ -452,6 +459,28 @@ export const layer: Layer.Layer<
             mcpAppModelContext,
             input.threadId,
           );
+          let composer = { text: message.text, records: message.context?.records ?? [] };
+          if (
+            referencesPstack(composer, message) &&
+            (yield* settings.getSettings.pipe(
+              Effect.map((current) => current.pstackEnabled),
+              // Expansion reports settings failures without preventing message delivery.
+              Effect.orElseSucceed(() => true),
+            ))
+          ) {
+            const thread = yield* projections.getThread(input.threadId);
+            composer = yield* pstack.expandComposer(
+              {
+                ...composer,
+                projectId: thread.projectId,
+                parentModelSelection: thread.modelSelection,
+                supportsOrchestrationTools:
+                  loaded.session.value.supportsT3Tools ??
+                  loaded.session.value.providerSession.capabilities.tools.supportsMcpTools,
+              },
+              message,
+            );
+          }
           yield* loaded.session.value
             .steerTurn({
               threadId: input.threadId,
@@ -464,13 +493,7 @@ export const layer: Layer.Layer<
               ...(appContext.length === 0 ? {} : { appContext }),
               message: {
                 messageId: message.id,
-                text: withMessageSenderNote(
-                  message,
-                  projectComposerContextForProvider({
-                    text: message.text,
-                    records: message.context?.records ?? [],
-                  }),
-                ),
+                text: withMessageSenderNote(message, projectComposerContextForProvider(composer)),
                 attachments: message.attachments,
                 createdBy: message.createdBy,
                 creationSource: message.creationSource,

@@ -89,6 +89,14 @@ const buildCmd = Command.make(
         }),
       );
 
+      const pstackSource = path.join(repoRoot, "packages/pstack");
+      const pstackTarget = path.join(serverDir, "dist/pstack");
+      yield* fs.makeDirectory(pstackTarget, { recursive: true });
+      for (const entry of ["upstream", "UPSTREAM.json"]) {
+        yield* fs.copy(path.join(pstackSource, entry), path.join(pstackTarget, entry));
+      }
+      yield* Effect.log("[cli] Bundled pstack into dist/pstack");
+
       const webDist = path.join(repoRoot, "apps/web/dist");
       const clientTarget = path.join(serverDir, "dist/client");
 

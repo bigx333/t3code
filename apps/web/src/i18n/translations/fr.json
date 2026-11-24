@@ -12804,5 +12804,7 @@
   "a90a441fd0e08de7": "Cet environnement",
   "7b4ebcc6bc4d5710": "Rétablir le réglage par défaut de la bibliothèque de compétences",
   "a133e14731aa61a0": "Bibliothèque de skills",
-  "ccdf81fb39ee7921": "bêta skills partagées dossier agents .agents/skills lien claude codex antigravity cursor opencode un ensemble comptes"
+  "ccdf81fb39ee7921": "bêta skills partagées dossier agents .agents/skills lien claude codex antigravity cursor opencode un ensemble comptes",
+  "7ae5a73f951efbee": "Rendez les workflows pstack de Lauren Tan disponibles sous forme de skills chez tous les fournisseurs. Exécutez {command} une fois pour choisir les modèles.",
+  "31ab377f509c09bf": "Rétablir le réglage par défaut de pstack"
 }

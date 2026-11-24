@@ -186,7 +186,7 @@ const readSkillSettings = Effect.fn("readSkillSettings")(function* (
   const path = yield* Path.Path;
   const platform = yield* HostProcess.Platform;
   const overridesByName = new Map<string, SkillOverride>();
-  const enabledPlugins = new Map<string, boolean>();
+  const enabledPlugins = new Map<string, unknown>();
   const managedPluginNames = new Set<string>();
   const managedPaths = new Set(claudeManagedSettingsPaths(path, platform, environment));
   let syncedPluginsHidden = false;
@@ -222,14 +222,10 @@ const readSkillSettings = Effect.fn("readSkillSettings")(function* (
       overridesByName.set(name, parseSkillOverride(value));
     }
     for (const [key, enabled] of Object.entries(parsed?.enabledPlugins ?? {})) {
-      if (typeof enabled === "boolean") {
-        enabledPlugins.set(key, enabled);
-        if (managedPaths.has(settingsPath) && key.includes("@")) {
-          managedPluginNames.add(pluginNameKey(key.slice(0, key.indexOf("@"))));
-        }
-      } else {
-        // Extended formats replace lower-precedence values without enabling the plugin here.
-        enabledPlugins.delete(key);
+      // Version-constrained values replace lower-precedence ones but only `true` enables here.
+      enabledPlugins.set(key, enabled);
+      if (typeof enabled === "boolean" && managedPaths.has(settingsPath) && key.includes("@")) {
+        managedPluginNames.add(pluginNameKey(key.slice(0, key.indexOf("@"))));
       }
     }
     // Claude ignores this switch in shared project settings, and honors only false.
@@ -409,7 +405,7 @@ const discoverInlinePluginSkillRoots = Effect.fn("discoverInlinePluginSkillRoots
   launchArgPluginDirectories: ReadonlyArray<string>,
   environmentPluginDirectories: string | undefined,
   cwd: string | undefined,
-  enabledPlugins: ReadonlyMap<string, boolean>,
+  enabledPlugins: ReadonlyMap<string, unknown>,
   managedPluginNames: ReadonlySet<string>,
 ) {
   const path = yield* Path.Path;
@@ -438,7 +434,10 @@ const discoverInlinePluginSkillRoots = Effect.fn("discoverInlinePluginSkillRoots
       const prefix = manifest?.name ?? path.basename(installPath);
       // A `<name>@inline` setting wins; otherwise the manifest's `defaultEnabled` decides.
       const setting = enabledPlugins.get(`${prefix}@inline`);
-      if (setting === false || (setting === undefined && manifest?.defaultEnabled === false)) {
+      if (
+        setting === false ||
+        (typeof setting !== "boolean" && manifest?.defaultEnabled === false)
+      ) {
         continue;
       }
       // Managed enabledPlugins entries, true or false, lock the name against inline copies.
@@ -453,7 +452,7 @@ const discoverInlinePluginSkillRoots = Effect.fn("discoverInlinePluginSkillRoots
 const discoverPluginSkillRoots = Effect.fn("discoverPluginSkillRoots")(function* (
   configDirPath: string,
   cwd: string | undefined,
-  enabledPlugins: ReadonlyMap<string, boolean>,
+  enabledPlugins: ReadonlyMap<string, unknown>,
   inlinePluginNames: ReadonlySet<string>,
   syncedBucket: string | undefined,
   environment: NodeJS.ProcessEnv,
@@ -485,6 +484,7 @@ const discoverPluginSkillRoots = Effect.fn("discoverPluginSkillRoots")(function*
     workspace === undefined ? undefined : yield* findPluginRepositoryRoot(workspace);
 
   for (const [key, entries] of Object.entries(installed?.plugins ?? {}).sort()) {
+    // Version-constrained entries are left to the native plugin resolver.
     if (enabledPlugins.get(key) !== true) continue;
     const applicable = yield* Effect.filter(
       entries.flatMap((entry) => Option.toArray(decodeInstalledPlugin(entry))),
@@ -524,7 +524,9 @@ const discoverPluginSkillRoots = Effect.fn("discoverPluginSkillRoots")(function*
   const bucketPath = path.join(syncedPath, syncedBucket);
   const disabledSyncedPlugins = new Set(
     [...enabledPlugins].flatMap(([pluginKey, enabled]) =>
-      !enabled && pluginKey.endsWith("@synced") ? [pluginNameKey(pluginKey.slice(0, -7))] : [],
+      enabled === false && pluginKey.endsWith("@synced")
+        ? [pluginNameKey(pluginKey.slice(0, -7))]
+        : [],
     ),
   );
   const hasBucketMarker = yield* fileSystem
@@ -626,6 +628,16 @@ export function customClaudeApiEndpointHost(baseUrl: string | undefined): string
     ? endpoint.hostname
     : undefined;
 }
+
+/** Plugin enablement after Claude's settings-file precedence, keyed `name@marketplace`. */
+export const readClaudeEnabledPlugins = Effect.fn("readClaudeEnabledPlugins")(function* (
+  config: Pick<ClaudeSettings, "homePath">,
+  cwd: string | undefined,
+  environment: NodeJS.ProcessEnv,
+): Effect.fn.Return<ReadonlyMap<string, unknown>, never, FileSystem.FileSystem | Path.Path> {
+  const configDirPath = yield* resolveClaudeConfigDirPath(config, environment, cwd);
+  return (yield* readSkillSettings(configDirPath, cwd, environment)).enabledPlugins;
+});
 
 // Claude's --add-dir is repeatable and variadic; parseCliArgs keeps only one value.
 export function claudeLaunchArgDirectories(launchArgs?: string): ReadonlyArray<string> {
