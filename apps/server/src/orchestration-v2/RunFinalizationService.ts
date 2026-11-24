@@ -5,6 +5,7 @@ import * as FiberMap from "effect/FiberMap";
 import * as FiberSet from "effect/FiberSet";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 
 import * as ProjectEnrichment from "../project/ProjectEnrichmentService.ts";
@@ -126,7 +127,35 @@ export const layerObserver = Layer.effect(
     const vcsStatus = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const pullRequests = yield* PullRequestService.PullRequestService;
-    const projects = yield* ProjectService.ProjectService;
+
+    // Many agents can finish in the same project at once. Invalidate once per project in a
+    // fixed window, with a trailing refresh even under continuous activity. Pushes and explicit
+    // PR mutations still call PullRequestService directly and refresh immediately.
+    const pendingProjects = new Set<ProjectId>();
+    const refreshes = yield* Queue.dropping<void>(1);
+    const refreshAfterTurn = Effect.fn("RunFinalizationService.refreshAfterTurn")(
+      (projectId: ProjectId) =>
+        Effect.sync(() => {
+          const first = pendingProjects.size === 0;
+          pendingProjects.add(projectId);
+          if (first) Queue.offerUnsafe(refreshes, undefined);
+        }),
+    );
+    yield* Effect.gen(function* () {
+      yield* Queue.take(refreshes);
+      yield* Effect.sleep("10 seconds");
+      const projects = Array.from(pendingProjects);
+      pendingProjects.clear();
+      yield* pullRequests.refreshAfterTurns(projects).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("failed to refresh pull requests after completed turns", {
+            projectIds: projects,
+            cause,
+          }),
+        ),
+      );
+    }).pipe(Effect.forever, Effect.forkScoped);
+    const projectService = yield* ProjectService.ProjectService;
     const enrichment = yield* ProjectEnrichment.ProjectEnrichmentService;
     const pullRequestLookups = yield* FiberMap.make<string>();
     const repositoryRefreshes = yield* FiberMap.make<ThreadId>();
@@ -137,7 +166,7 @@ export const layerObserver = Layer.effect(
       "RunFinalizationService.refreshMissingRepositoryIdentity",
     )(
       function* (projectId: ProjectId) {
-        const project = yield* projects.getById(projectId);
+        const project = yield* projectService.getById(projectId);
         if (Option.isNone(project)) return;
         const { workspaceRoot } = project.value;
         if ((yield* enrichment.readRepositoryIdentity(workspaceRoot)) !== null) return;
@@ -154,7 +183,7 @@ export const layerObserver = Layer.effect(
         ),
     );
     return {
-      refreshAfterTurn: pullRequests.refreshAfterTurn,
+      refreshAfterTurn,
       // A project can track dozens of repositories, so the next turn must not wait for them all.
       // A newer turn's refresh replaces a running one.
       refreshRepositories: Effect.fn("RunFinalizationService.refreshRepositories")(function* ({

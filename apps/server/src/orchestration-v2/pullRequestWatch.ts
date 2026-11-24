@@ -13,6 +13,7 @@ export const PULL_REQUEST_WATCH_WAKE_LIMIT = 10;
 export const PULL_REQUEST_WATCH_NO_CHECKS_MS = 15 * 60_000;
 const LISTED_ITEMS = 10;
 const SNIPPET_LENGTH = 200;
+const READ_FAILURES = "  Read why with pull_request_failures.";
 
 export type PullRequestWatchChange =
   | { readonly kind: "checks-failed"; readonly failed: ReadonlyArray<PullRequestCheck> }
@@ -401,11 +402,16 @@ function changeLines(
 ): Array<string> {
   switch (change.kind) {
     case "checks-failed":
-      return [`- Checks failed${context.commit}:`, ...listed(change.failed, failedCheckLine)];
+      return [
+        `- Checks failed${context.commit}:`,
+        ...listed(change.failed, failedCheckLine),
+        READ_FAILURES,
+      ];
     case "checks-finished":
       return [
         `- Every check has finished${context.commit}: ${change.passed} passed, ${change.failing.length} still failing:`,
         ...listed(change.failing, failedCheckLine),
+        READ_FAILURES,
       ];
     case "checks-awaiting-approval":
       return [

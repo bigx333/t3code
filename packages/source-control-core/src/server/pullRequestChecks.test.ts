@@ -1,7 +1,7 @@
 import type { PullRequestCheck, PullRequestCheckStatus } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { dedupeChecks } from "./pullRequestChecks.ts";
+import { CHECK_LOG_EXCERPT_BUDGET, dedupeChecks, excerptCheckLog } from "./pullRequestChecks.ts";
 
 function entry(
   name: string,
@@ -215,5 +215,170 @@ describe("dedupeChecks", () => {
     ]);
 
     expect(checks.map((check) => check.name)).toEqual(["CI / build", "build"]);
+  });
+});
+
+describe("check log excerpts", () => {
+  it.each([
+    { chunks: [""], text: "", lines: 0 },
+    {
+      chunks: ["2026-10-30T12:00:00.1234567Z \u001b[31merror\u001b[0m\n"],
+      text: "error",
+      lines: 1,
+    },
+    { chunks: ["one\ntw", "o\nthree"], text: "one\ntwo\nthree", lines: 3 },
+    {
+      chunks: [
+        [
+          " ❯ ~effect/Effect/successCont ../../node_modules/.pnpm/effect@4.1.3/node_modules/effect/dist/esm/Effect.js:1:1",
+          " ❯ FiberImpl.runLoop ../../node_modules/.pnpm/effect@4.1.3/node_modules/effect/dist/esm/internal/fiberRuntime.js:1:1",
+          "##[start-action display=Install dependencies;id=install]",
+          "##[end-action id=install;outcome=success;conclusion=success;duration_ms=900]",
+          "Post job cleanup.",
+          "Cleaning up orphan processes",
+          " ❯ runAssertion src/example.test.ts:10:5",
+        ].join("\n"),
+      ],
+      text: " ❯ runAssertion src/example.test.ts:10:5",
+      lines: 7,
+    },
+    {
+      chunks: [
+        [
+          "##[error]TypeError: boom",
+          "    at Object.<anonymous> (/home/runner/work/app/node_modules/foo/index.js:1:1)",
+          "    at Object.<anonymous> (/home/runner/work/app/src/build.js:2:2)",
+        ].join("\n"),
+      ],
+      text: "##[error]TypeError: boom\n    at Object.<anonymous> (/home/runner/work/app/src/build.js:2:2)",
+      lines: 3,
+    },
+    {
+      chunks: [
+        [
+          "##[start-action display=Install dependencies;id=install]",
+          "##[end-action id=install;outcome=success;conclusion=success;duration_ms=900]",
+          "##[start-action display=Build;id=build]",
+          "##[error]The action has timed out.",
+          "##[end-action id=build;outcome=failure;conclusion=failure;duration_ms=1250]",
+        ].join("\n"),
+      ],
+      text: "##[error]The action has timed out.\n##[end-action id=build;outcome=failure;conclusion=failure;duration_ms=1250]",
+      lines: 5,
+    },
+  ])("strips formatting and counts lines across chunks %#", ({ chunks, text, lines }) => {
+    expect(excerptCheckLog(chunks)).toEqual({
+      _tag: "excerpt",
+      text,
+      totalLines: lines,
+      truncated: false,
+    });
+  });
+
+  it("does not let noise consume error context or tail slots", () => {
+    const noise = [
+      " ❯ FiberImpl.runLoop ../../node_modules/.pnpm/effect@4.1.3/node_modules/effect/dist/esm/internal/fiberRuntime.js:1:1",
+      "##[start-action display=Install dependencies;id=install]",
+      "##[end-action id=install;outcome=success;conclusion=success;duration_ms=900]",
+      "Post job cleanup.",
+      "Cleaning up orphan processes",
+    ];
+    const expected = [
+      "##[group]Run vp test",
+      "before 1",
+      "before 2",
+      "before 3",
+      "##[error]Assertion failed",
+      "after 1",
+      "after 2",
+      "after 3",
+      ...Array.from({ length: 20 }, (_, i) => `tail ${i}`),
+    ];
+    const result = excerptCheckLog([
+      [
+        ...expected.slice(0, 4),
+        ...noise,
+        ...expected.slice(4, 5),
+        ...noise,
+        ...expected.slice(5),
+        ...noise,
+      ].join("\n"),
+    ]);
+
+    expect(result.text).toBe(expected.join("\n"));
+    expect(result.totalLines).toBe(expected.length + noise.length * 3);
+    // Every real line is present, so dropped noise alone does not mark the excerpt truncated.
+    expect(result.truncated).toBe(false);
+  });
+
+  it("keeps error context, its Run header and the tail within both budgets", () => {
+    const lines = [
+      "##[group]Run vp test",
+      ...Array.from({ length: 100 }, (_, i) => `line ${i}`),
+      "before",
+      "##[error]Assertion failed",
+      "after",
+      ...Array.from({ length: 100 }, (_, i) => `cleanup ${i}`),
+    ];
+    const result = excerptCheckLog([lines.join("\n")]);
+    expect(result.text).toContain("##[group]Run vp test");
+    expect(result.text).toContain("before\n##[error]Assertion failed\nafter");
+    expect(result.text).toContain("cleanup 99");
+    expect(result.totalLines).toBe(lines.length);
+    expect(result.truncated).toBe(true);
+    expect(result.text.split("\n").length).toBeLessThanOrEqual(CHECK_LOG_EXCERPT_BUDGET.maxLines);
+    expect(Buffer.byteLength(result.text)).toBeLessThanOrEqual(CHECK_LOG_EXCERPT_BUDGET.maxBytes);
+  });
+
+  it("keeps the failed section's tail over a later same-named step that passed", () => {
+    const result = excerptCheckLog([
+      [
+        "##[group]Run vp test",
+        "##[error]Assertion failed",
+        "exit 1",
+        "##[group]Run vp test",
+        "all green",
+        "more output",
+        "still more",
+        "done",
+      ].join("\n"),
+    ]);
+    expect(result.text).toBe(
+      "##[group]Run vp test\n##[error]Assertion failed\nexit 1\n##[group]Run vp test\nall green",
+    );
+    expect(result.totalLines).toBe(8);
+    expect(result.truncated).toBe(true);
+  });
+
+  it.each([
+    { name: "short", tailLineBytes: 16, oldestTailKept: true },
+    { name: "long", tailLineBytes: 1024, oldestTailKept: false },
+  ])("keeps the error window ahead of $name tail lines", ({ tailLineBytes, oldestTailKept }) => {
+    const lines = [
+      "##[group]Run vp test",
+      "##[error]Assertion failed",
+      "after",
+      ...Array.from({ length: 30 }, (_, i) => `filler ${i}`),
+      ...Array.from({ length: 20 }, (_, i) => `tail ${i} `.padEnd(tailLineBytes, "x")),
+    ];
+    const result = excerptCheckLog([lines.join("\n")]);
+    expect(result.text).toContain("##[group]Run vp test\n##[error]Assertion failed\nafter");
+    expect(result.text).toContain("tail 19 ");
+    expect(result.text.includes("tail 0 ")).toBe(oldestTailKept);
+    expect(result.text.split("\n").length).toBeLessThanOrEqual(CHECK_LOG_EXCERPT_BUDGET.maxLines);
+    expect(Buffer.byteLength(result.text)).toBeLessThanOrEqual(CHECK_LOG_EXCERPT_BUDGET.maxBytes);
+  });
+
+  it("bounds huge Unicode lines and retains the end of a long stream", () => {
+    function* chunks() {
+      yield "🔥".repeat(20_000);
+      yield "\n";
+      for (let i = 0; i < 100_000; i++) yield `row ${i}\n`;
+    }
+    const result = excerptCheckLog(chunks());
+    expect(result.totalLines).toBe(100_001);
+    expect(result.text).toContain("row 99999");
+    expect(result.truncated).toBe(true);
+    expect(Buffer.byteLength(result.text)).toBeLessThanOrEqual(CHECK_LOG_EXCERPT_BUDGET.maxBytes);
   });
 });

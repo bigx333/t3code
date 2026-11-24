@@ -49,13 +49,26 @@ describe("buildRuntimeInstructions", () => {
     assert.include(instructions, "never watch, even if the brief says babysit");
     assert.include(
       instructions,
-      "After PR work, a child's last line is: PR <full URL>, head <SHA>, checks and reviews <state>.",
+      "After PR work, a child's last line is the `report` line from pull_request_status.",
     );
     assert.include(
       instructions,
       "For PR waits, no sleep, loops, gh --watch, Monitor or ScheduleWakeup.",
     );
     assert.include(instructions, "call unwatch_pull_request");
+  });
+
+  it("sends PR operations through T3's tools and keeps gh for gaps", () => {
+    const instructions = buildRuntimeInstructions({ harness: "Codex" });
+
+    assert.include(instructions, "Read pull requests through T3.");
+    assert.include(
+      instructions,
+      "pull_request_status returns head, checks, reviews and mergeability",
+    );
+    assert.include(instructions, "gh spends the same GitHub rate limit");
+    assert.include(instructions, "Use T3 tools for PR writes when available.");
+    assert.include(instructions, "stop all GitHub reads, gh included, until the time it names");
   });
 
   it("carries the feedback line of the agent feedback mode, and none while it is off", () => {
@@ -78,8 +91,8 @@ describe("buildRuntimeInstructions", () => {
     const base = { runtimeMode: "full-access", interactionMode: "default" } as const;
     const single = buildRuntimeInstructions({ harness: "Codex" });
     assert.equal(
-      single,
-      `${buildRuntimeInstructions({ harness: "Codex", pullRequestLinking: false })}\n\n${PULL_REQUEST_LINKING_INSTRUCTIONS}`,
+      single.replace(`\n\n${PULL_REQUEST_LINKING_INSTRUCTIONS}`, ""),
+      buildRuntimeInstructions({ harness: "Codex", pullRequestLinking: false }),
     );
     assert.equal(
       buildRuntimeInstructions({ harness: "Codex", runtimePolicy: { ...base, cwd: "/work/app" } }),

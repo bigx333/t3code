@@ -15,6 +15,7 @@ import {
   type SourceControlAppSignIn,
 } from "@t3tools/source-control-core/shared/definition";
 
+import { classifyGhCommand } from "./ghCommand.ts";
 import { gitHubMediaUrl, gitHubRawFileUrl } from "./gitHubMedia.ts";
 import { icon } from "./icon.ts";
 import { gitHubReferenceAutolinks } from "./referenceAutolinks.ts";
@@ -132,6 +133,7 @@ export const definition = defineSourceControl({
   changeRequestCloseCommand: /\bgh\s+(?:pr\s+(?:merge|close)|stack\s+merge)\b/u,
   // `new` is gh's alias for `create`.
   changeRequestCreateCommand: /\bgh\s+pr\s+(?:create|new)\b/u,
+  classifyCommand: classifyGhCommand,
   authorProfileUrl: (login, repositoryUrl) =>
     login.endsWith("[bot]")
       ? null

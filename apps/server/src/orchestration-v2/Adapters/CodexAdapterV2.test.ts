@@ -1176,6 +1176,7 @@ describe("CodexAdapterV2 session initialize", () => {
     transcript: CodexReplay.CodexAppServerReplayTranscript,
     beforeEmitInbound?: CodexReplay.CodexAppServerReplayDriver["beforeEmitInbound"],
     compatibility?: CodexAdapterV2.CodexAdapterV2Options["compatibility"],
+    environment: NodeJS.ProcessEnv = {},
   ) =>
     Effect.gen(function* () {
       const driver = yield* CodexReplay.makeReplayDriver(
@@ -1186,7 +1187,7 @@ describe("CodexAdapterV2 session initialize", () => {
       const adapter = yield* CodexAdapterV2.makeCodexAdapterV2({
         instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
         settings: DEFAULT_CODEX_SETTINGS,
-        environment: {},
+        environment,
         ...(compatibility === undefined ? {} : { compatibility }),
         clientFactory: {
           open: (openInput) =>
@@ -1242,6 +1243,74 @@ describe("CodexAdapterV2 session initialize", () => {
 
   const replayPreamble = (nativeThreadId: string) =>
     codexReplayPreamble({ nativeThreadId, nativeTurnId: "unused", prompt: "unused" });
+
+  it.effect.each([undefined, "/explicit/codex/bin"])(
+    "retains the hydrated managed gh PATH while respecting explicit Codex PATH %s",
+    (shellPath) =>
+      Effect.gen(function* () {
+        const managedPath =
+          "/t3/github/bin/launcher:/user/.nvm/bin:/user/.asdf/shims:/user/bin:/bin";
+        const preamble = replayPreamble("managed-gh-thread");
+        const session = yield* openReplaySession(
+          makeCodexReplayTranscript({
+            scenario: "managed-gh-path",
+            entries: [
+              ...preamble.slice(0, 3),
+              {
+                type: "expect_outbound",
+                label: "config/read",
+                frame: { id: 2, method: "config/read", params: { includeLayers: false } },
+              },
+              {
+                type: "emit_inbound",
+                label: "config/read",
+                frame: {
+                  id: 2,
+                  result: {
+                    config:
+                      shellPath === undefined
+                        ? {}
+                        : { shell_environment_policy: { set: { PATH: shellPath } } },
+                    origins: {},
+                  },
+                },
+              },
+              {
+                type: "expect_outbound",
+                label: "thread/start",
+                frame: {
+                  id: 3,
+                  method: "thread/start",
+                  params: {
+                    config: {
+                      ...CodexAdapterV2.CODEX_THREAD_CONFIG,
+                      ...(shellPath === undefined
+                        ? { "shell_environment_policy.set.PATH": managedPath }
+                        : {}),
+                    },
+                  },
+                },
+              },
+              withReplayRequestId(preamble[4]!, 3),
+            ],
+          }),
+          undefined,
+          undefined,
+          { PATH: managedPath, T3_GH_SHIM_DIR: "/t3/github/bin/launcher", CUSTOM: "preserved" },
+        );
+        yield* session.ensureThread("thread-managed-gh-path");
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+  );
 
   it.effect("sends one initialize when two threads start on a fresh session at once", () =>
     Effect.gen(function* () {

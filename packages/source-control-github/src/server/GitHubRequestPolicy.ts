@@ -6,6 +6,7 @@ import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Metric from "effect/Metric";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
@@ -18,7 +19,12 @@ import * as GitHubAppSignIn from "./GitHubAppSignIn.ts";
 import * as GitHubCredentials from "./GitHubCredentials.ts";
 import * as GitHubQuota from "./GitHubQuota.ts";
 
+export const gitHubRequestsTotal = Metric.counter("t3_github_requests_total", {
+  description: "Actual GitHub HTTP requests by quota resource and response status",
+});
+
 const DEFAULT_TIMEOUT = Duration.seconds(30);
+const MINIMUM_RATE_LIMIT_COOLDOWN_MS = 60_000;
 /** GitHub's secondary limits penalize concurrent bursts. */
 const CONCURRENCY = 8;
 const REQUEST_HEADERS = { "x-github-api-version": "2022-11-28", "user-agent": "t3code" };
@@ -57,6 +63,7 @@ export class GitHubApiRateLimitError extends Schema.TaggedError<GitHubApiRateLim
     host: Schema.String,
     operation: Schema.String,
     retryAt: Schema.optionalKey(Schema.Finite),
+    resource: Schema.optional(Schema.String),
   },
 ) {
   override get message(): string {
@@ -147,9 +154,27 @@ function retryAtFrom(
   now: number,
 ): number | undefined {
   const fromRetryAfter = SourceControlRateLimit.retryAtFromHeader(headers["retry-after"], now);
-  if (fromRetryAfter !== undefined) return fromRetryAfter;
   const reset = Number(headers["x-ratelimit-reset"]) * 1_000;
-  return Number.isFinite(reset) && reset > now ? reset : undefined;
+  if (headers["x-ratelimit-remaining"] === "0" && Number.isFinite(reset) && reset > now) {
+    return Math.max(reset, fromRetryAfter ?? 0);
+  }
+  return fromRetryAfter;
+}
+
+interface RateLimitResponse {
+  readonly headers: Readonly<Record<string, string | undefined>>;
+  readonly graphqlErrors?: ReadonlyArray<{ readonly type?: unknown; readonly message?: unknown }>;
+  readonly body?: string;
+}
+
+export function isSecondaryRateLimited(input: RateLimitResponse): boolean {
+  return (
+    input.headers["retry-after"] !== undefined ||
+    /secondary rate limit/i.test(input.body ?? "") ||
+    (input.graphqlErrors ?? []).some(
+      (error) => typeof error.message === "string" && /secondary rate limit/i.test(error.message),
+    )
+  );
 }
 
 /**
@@ -157,17 +182,14 @@ function retryAtFrom(
  * limit only when its quota, body or GraphQL errors name one (older hosts say "abuse detection
  * mechanism"): a proxy in front of GitHub Enterprise can refuse with `Retry-After` alone.
  */
-export function isRateLimited(input: {
-  readonly status: number;
-  readonly headers: Readonly<Record<string, string | undefined>>;
-  readonly graphqlErrors?: ReadonlyArray<{ readonly type?: unknown; readonly message?: unknown }>;
-  readonly body?: string;
-}): boolean {
+export function isRateLimited(input: RateLimitResponse & { readonly status: number }): boolean {
   const { status, headers, graphqlErrors: errors } = input;
   return (
     status === 429 ||
     (errors !== undefined &&
+      errors.length > 0 &&
       (headers["x-ratelimit-remaining"] === "0" ||
+        isSecondaryRateLimited(input) ||
         errors.some(
           (error) =>
             error.type === "RATE_LIMITED" ||
@@ -195,7 +217,8 @@ export type GitHubAnswer<A> = {
       /** GitHub left part of the answer out as not found or forbidden for this credential. */
       readonly withheld?: boolean;
     }
-  | { readonly _tag: "RateLimited" | "Unauthorized" | "NotFound" }
+  | { readonly _tag: "RateLimited"; readonly secondary?: boolean }
+  | { readonly _tag: "Unauthorized" | "NotFound" }
   | { readonly _tag: "Failed"; readonly messages?: ReadonlyArray<string> | undefined }
 );
 
@@ -209,7 +232,7 @@ export interface GitHubRequest {
   readonly timeout?: Duration.Input | undefined;
 }
 
-/** REST/GraphQL share credentials, slots, quota reserves and host-wide pauses. */
+/** REST/GraphQL share credentials, slots and secondary pauses; primary quotas stay separate. */
 export class GitHubRequestPolicy extends Context.Service<
   GitHubRequestPolicy,
   {
@@ -355,13 +378,12 @@ export const make = Effect.gen(function* () {
       "github.operation": input.operation,
     });
     const scope = yield* SourceControlRateLimit.CredentialScope;
-    // A refusal pauses the whole host, whichever quota it spent: the key PullRequestService
-    // records its own backoff under.
     const key = { provider: SourceControlProviderKind.make("github"), host };
+    const resourceKey = { ...key, resource: input.resource };
 
     // Settlement annotates the request span with status and rate-limit attributes.
     const settle = Effect.fnUntraced(function* (
-      lease: number,
+      leases: { readonly host: number; readonly resource: number },
       answer: GitHubAnswer<A>,
       held: ChosenCredential,
     ) {
@@ -372,18 +394,45 @@ export const make = Effect.gen(function* () {
       });
       switch (answer._tag) {
         case "Ok":
-          yield* limits.recordSuccess({ ...key, lease });
+          yield* limits.recordSuccess({ ...key, lease: leases.host });
+          yield* limits.recordSuccess({ ...resourceKey, lease: leases.resource });
           return answer.value;
         case "RateLimited": {
-          const retryAt = retryAtFrom(answer.headers, yield* Clock.currentTimeMillis);
-          yield* limits.recordRateLimit({ ...key, lease, retryAt });
+          const now = yield* Clock.currentTimeMillis;
+          const primary = answer.headers["x-ratelimit-remaining"] === "0";
+          const secondary =
+            !primary || answer.secondary === true || answer.headers["retry-after"] !== undefined;
+          const proposedRetryAt = retryAtFrom(answer.headers, now);
+          if (primary) {
+            yield* limits.recordRateLimit({
+              ...resourceKey,
+              lease: leases.resource,
+              retryAt: proposedRetryAt,
+              minimumCooldownMs: MINIMUM_RATE_LIMIT_COOLDOWN_MS,
+            });
+          }
+          if (secondary) {
+            yield* limits.recordRateLimit({
+              ...key,
+              lease: leases.host,
+              retryAt: SourceControlRateLimit.retryAtFromHeader(answer.headers["retry-after"], now),
+              minimumCooldownMs: MINIMUM_RATE_LIMIT_COOLDOWN_MS,
+            });
+          }
+          const retryAt = yield* limits.check(secondary ? key : resourceKey).pipe(
+            Effect.match({
+              onFailure: (paused) => paused.retryAt,
+              onSuccess: () => proposedRetryAt ?? now + MINIMUM_RATE_LIMIT_COOLDOWN_MS,
+            }),
+          );
           yield* Effect.annotateCurrentSpan({
             "github.rate_limited": true,
-            ...(retryAt === undefined ? {} : { "github.retry_at": retryAt }),
+            "github.retry_at": retryAt,
           });
           return yield* new GitHubApiRateLimitError({
             ...context,
-            ...(retryAt === undefined ? {} : { retryAt }),
+            retryAt,
+            ...(secondary ? {} : { resource: input.resource }),
           });
         }
         case "Unauthorized":
@@ -410,19 +459,21 @@ export const make = Effect.gen(function* () {
       slots
         .withPermit(
           Effect.gen(function* () {
-            const lease = yield* quota
-              .admit(host, input.resource, { allowReserve: input.allowReserve })
-              .pipe(
-                Effect.andThen(
-                  limits.check(key, input.allowReserve ? { allowPaused: true } : undefined),
-                ),
-                Effect.tapError((paused) =>
-                  Effect.annotateCurrentSpan({
-                    "github.paused": true,
-                    "github.retry_at": paused.retryAt,
-                  }),
-                ),
-              );
+            const leases = yield* Effect.all({
+              host: limits.check(key),
+              resource: limits.check(resourceKey),
+            }).pipe(
+              Effect.tap(() =>
+                quota.admit(host, input.resource, { allowReserve: input.allowReserve }),
+              ),
+              Effect.tapError((paused) =>
+                Effect.annotateCurrentSpan({
+                  "github.paused": true,
+                  "github.retry_at": paused.retryAt,
+                  "github.pause_reason": paused.pauseReason ?? "rate-limited",
+                }),
+              ),
+            );
             // One deadline covers the headers and the body: a host that answers headers and then
             // stalls must not hold a shared slot for undici's own five-minute body timeout.
             const answer = yield* send(
@@ -436,17 +487,34 @@ export const make = Effect.gen(function* () {
                     new GitHubApiRequestError({ ...context, cause: new Cause.TimeoutError() }),
                   ),
               }),
+              Effect.tapError(() =>
+                Metric.update(
+                  Metric.withAttributes(gitHubRequestsTotal, {
+                    resource: input.resource,
+                    status: "0",
+                  }),
+                  1,
+                ),
+              ),
+            );
+            yield* Metric.update(
+              Metric.withAttributes(gitHubRequestsTotal, {
+                resource: input.resource,
+                status: String(answer.status ?? 0),
+              }),
+              1,
             );
             if (held.fromApp && refusedToApp(answer)) {
               const personal = yield* Effect.option(personalCredential(host));
               if (Option.isSome(personal)) {
                 yield* quota.observe(host, answer.headers);
-                yield* limits.recordSuccess({ ...key, lease });
+                yield* limits.recordSuccess({ ...key, lease: leases.host });
+                yield* limits.recordSuccess({ ...resourceKey, lease: leases.resource });
                 yield* Effect.annotateCurrentSpan({ "github.app_refused": true });
                 return { _tag: "Retry", with: personal.value } as const;
               }
             }
-            return { _tag: "Done", value: yield* settle(lease, answer, held) } as const;
+            return { _tag: "Done", value: yield* settle(leases, answer, held) } as const;
           }),
         )
         // The rate-limit scope follows the credential, so a pause on one account never blocks another.

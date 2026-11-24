@@ -12842,5 +12842,8 @@
   "f7f4d6177d296344": "Convidar um modelo para esta conversa",
   "e900dd59c72920b8": "Convide modelos de qualquer provedor para a mesma thread. Fale com todos ou use @ para se dirigir a um deles e deixe que respondam uns aos outros. Desativar a opção impede novos convites. Em um grupo ativo, ainda é possível encerrar o grupo e remover participantes.",
   "1e202ed0dfd0ab8e": "Conversas em grupo",
-  "9c544a42f8b60457": "beta convidar modelos vários provedores pares assentos conversar entre si discutir participantes @ conversar juntos"
+  "9c544a42f8b60457": "beta convidar modelos vários provedores pares assentos conversar entre si discutir participantes @ conversar juntos",
+  "aed5b53ddeaf355a": "O T3 encaminha as consultas compatíveis feitas com {command} nas sessões locais de agentes para suas ferramentas compartilhadas de PR. Desative esta opção para permitir consultas diretas. A alteração entra em vigor na próxima vez que uma sessão de agente for iniciada.",
+  "dea618d43854f342": "Restaurar o padrão do controle de leitura do GitHub",
+  "8032cb028928fc47": "Encaminhar as consultas dos agentes ao GitHub pelo T3"
 }

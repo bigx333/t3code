@@ -37,6 +37,47 @@ const layerNoProject = Layer.mergeAll(
   Layer.mock(ProjectEnrichment.ProjectEnrichmentService)({}),
 );
 
+it.effect("coalesces completed turns without starving later project refreshes", () => {
+  const projectA = ProjectId.make("project-turn-refresh-a");
+  const projectB = ProjectId.make("project-turn-refresh-b");
+  const refreshed: ProjectId[] = [];
+  const layer = RunFinalization.layerObserver.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        layerNoProject,
+        Layer.mock(WorkspaceEntries.WorkspaceEntries)({}),
+        Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({}),
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
+        Layer.mock(PullRequestService.PullRequestService)({
+          refreshAfterTurns: (projectIds) =>
+            Effect.sync(() => {
+              refreshed.push(...projectIds);
+            }),
+        }),
+      ),
+    ),
+  );
+  return Effect.gen(function* () {
+    const observer = yield* RunFinalization.RunFinalizationObserver;
+    yield* Effect.forEach(Array.from({ length: 20 }), () => observer.refreshAfterTurn(projectA));
+    assert.deepEqual(refreshed, []);
+    yield* TestClock.adjust("9 seconds");
+    yield* observer.refreshAfterTurn(projectA);
+    yield* observer.refreshAfterTurn(projectB);
+    yield* TestClock.adjust("1 second");
+    assert.deepEqual(refreshed, [projectA, projectB]);
+
+    // Continuous activity starts a new fixed window instead of postponing the last refresh.
+    yield* observer.refreshAfterTurn(projectA);
+    yield* TestClock.adjust("9 seconds");
+    yield* observer.refreshAfterTurn(projectA);
+    yield* TestClock.adjust("1 second");
+    assert.deepEqual(refreshed, [projectA, projectB, projectA]);
+    yield* TestClock.adjust("1 minute");
+    assert.deepEqual(refreshed, [projectA, projectB, projectA]);
+  }).pipe(Effect.provide(layer));
+});
+
 const finalizationLayer = (
   scopeId: CheckpointScopeId,
   runId: RunId,

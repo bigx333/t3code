@@ -1279,6 +1279,15 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("pull request merge squash rebase last selected")],
   },
   {
+    id: "agent-github-reads",
+    title: msg("Send agents' GitHub reads through T3"),
+    to: "/settings/source-control",
+    scope: "environment-defaults",
+    searchTerms: [
+      "source control gh cli claude codex agents pull request status checks failures feedback rate limit gate block T3_GH_DIRECT",
+    ],
+  },
+  {
     id: "issue-trackers",
     title: msg("Issue trackers"),
     to: "/settings/source-control",

@@ -48,6 +48,7 @@ import * as PreviewManager from "../preview/Manager.ts";
 
 import * as DeviceService from "../device/DeviceService.ts";
 import * as GitManager from "../git/GitManager.ts";
+import * as PullRequestOracle from "../pullRequest/PullRequestOracle.ts";
 import * as PullRequestReviewGuideService from "../pullRequest/PullRequestReviewGuideService.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ServerConfig from "../config.ts";
@@ -112,6 +113,7 @@ const layerPullRequestsTest = McpHttpServer.layerPullRequestsToolkit.pipe(
   Layer.provide(
     Layer.mergeAll(
       Layer.mock(ProjectService.ProjectService)({}),
+      Layer.mock(PullRequestOracle.PullRequestOracle)({}),
       Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
       Layer.mock(PullRequestService.PullRequestService)({}),
       Layer.mock(GitManager.GitManager)({}),
@@ -1891,6 +1893,7 @@ it.effect(
             Layer.mergeAll(
               McpToolAccessTestkit.liveThreadsLayer,
               Layer.mock(ProjectService.ProjectService)({}),
+              Layer.mock(PullRequestOracle.PullRequestOracle)({}),
               Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
               Layer.mock(PullRequestService.PullRequestService)({
                 servesProject: (projectId) => Effect.succeed(projectId !== "project-noForgeToken"),
@@ -1967,8 +1970,18 @@ it.effect(
         expect(noForgeTools).toEqual(
           expect.arrayContaining(["link_pull_request", "watch_pull_request"]),
         );
+        const oracleTools = [
+          "pull_request_status",
+          "pull_request_failures",
+          "pull_request_feedback",
+        ];
+        expect(noForgeTools).toEqual(expect.arrayContaining(oracleTools));
         expect(
-          noForgeTools.filter((name) => name.startsWith("pull_request_") || name.startsWith("ci_")),
+          noForgeTools.filter(
+            (name) =>
+              (name.startsWith("pull_request_") && !oracleTools.includes(name)) ||
+              name.startsWith("ci_"),
+          ),
         ).toEqual([]);
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),

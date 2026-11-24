@@ -12837,5 +12837,8 @@
   "f7f4d6177d296344": "Invitar a un modelo a este hilo",
   "e900dd59c72920b8": "Invita a modelos de cualquier proveedor a un mismo hilo. Habla con todos o dirígete a uno con @ y deja que se respondan entre sí. Desactivar esta opción impide nuevas invitaciones. Los grupos en curso conservan los controles para finalizar el grupo y quitar miembros.",
   "1e202ed0dfd0ab8e": "Conversaciones en grupo",
-  "9c544a42f8b60457": "beta invitar modelos varios proveedores pares asientos hablar entre sí debatir participantes @ chatear juntos"
+  "9c544a42f8b60457": "beta invitar modelos varios proveedores pares asientos hablar entre sí debatir participantes @ chatear juntos",
+  "aed5b53ddeaf355a": "T3 redirige las operaciones de lectura compatibles de {command} desde las sesiones locales de los agentes a sus herramientas compartidas de pull requests. Desactiva esta opción para permitir las lecturas directas. El cambio se aplica la próxima vez que se inicia una sesión de agente.",
+  "dea618d43854f342": "Restablecer el control de lectura de GitHub a su valor predeterminado",
+  "8032cb028928fc47": "Canalizar las consultas de los agentes a GitHub a través de T3"
 }

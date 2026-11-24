@@ -3,6 +3,12 @@ import {
   OrchestratorMcpEnvironmentTarget,
   OrchestratorMcpFailure,
   PositiveInt,
+  PullRequestFailureReport,
+  PullRequestFailuresInput,
+  PullRequestFeedbackReport,
+  PullRequestOperationError,
+  PullRequestRateLimited,
+  PullRequestReadInput,
   PullRequestCheck,
   PullRequestCommentKind,
   PullRequestChecksState,
@@ -15,6 +21,8 @@ import {
   PullRequestReviewGuide,
   PullRequestReviewGuideRun,
   PullRequestState,
+  PullRequestStatusInput,
+  PullRequestStatusReport,
   PullRequestUnavailableError,
   PullRequestVisibility,
   PullRequestWatchUntil,
@@ -32,6 +40,7 @@ import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as GitManager from "../../../git/GitManager.ts";
 import * as ProjectService from "../../../project/ProjectService.ts";
+import * as PullRequestOracle from "../../../pullRequest/PullRequestOracle.ts";
 import * as PullRequestWatchService from "../../../pullRequest/PullRequestWatchService.ts";
 import {
   PullRequestUrlInvalidError,
@@ -42,6 +51,7 @@ import {
 } from "../../../pullRequest/pullRequestTarget.ts";
 import * as PullRequestService from "../../../pullRequest/PullRequestService.ts";
 import * as PullRequestReviewGuideService from "../../../pullRequest/PullRequestReviewGuideService.ts";
+import { PullRequestProjectNotFoundError } from "../../../pullRequest/pullRequestTargets.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
@@ -55,6 +65,11 @@ const forgeDependencies = [...dependencies, PullRequestService.PullRequestServic
 const guideDependencies = [
   ...dependencies,
   PullRequestReviewGuideService.PullRequestReviewGuideService,
+];
+
+const readDependencies = [
+  McpInvocationContext.McpInvocationContext,
+  PullRequestOracle.PullRequestOracle,
 ];
 
 const watchDependencies = [...dependencies, PullRequestWatchService.PullRequestWatchService];
@@ -121,15 +136,6 @@ export class PullRequestListFailedError extends Schema.TaggedError<PullRequestLi
   }
 }
 
-export class PullRequestProjectNotFoundError extends Schema.TaggedError<PullRequestProjectNotFoundError>()(
-  "PullRequestProjectNotFoundError",
-  { repository: Schema.String },
-) {
-  override get message(): string {
-    return `No project in this environment is a checkout of ${this.repository}, so its pull requests cannot be read here. Add one with t3_project_create.`;
-  }
-}
-
 export class PullRequestGuideFailedError extends Schema.TaggedError<PullRequestGuideFailedError>()(
   "PullRequestGuideFailedError",
   { detail: Schema.String, cause: Schema.optional(Schema.Defect()) },
@@ -192,6 +198,9 @@ export const PullRequestToolError = Schema.Union([
   PullRequestWatchService.PullRequestWatchFromSubagentError,
   PullRequestProjectNotFoundError,
   PullRequestGuideFailedError,
+  PullRequestOracle.PullRequestOracleNoTargetError,
+  PullRequestOracle.PullRequestOracleAmbiguousTargetError,
+  PullRequestOperationError,
   PullRequestForgeError,
   PullRequestBranchHasNoneError,
   PullRequestNothingToDoError,
@@ -208,7 +217,7 @@ const PullRequestIdentity = {
 
 /** A delegated child's report is how its parent learns the PR, so the link result asks for it. */
 export const CHILD_PULL_REQUEST_REPORT_NEXT =
-  "End your reply with: PR <full URL>, head <SHA>, checks and reviews <state>.";
+  "End your reply with the `report` line from pull_request_status.";
 
 export const LinkPullRequestResult = Schema.Struct({
   ...PullRequestIdentity,
@@ -492,6 +501,57 @@ const ReadPullRequestGuideTool = Tool.make("read_pull_request_guide", {
   dependencies: guideDependencies,
 })
   .annotate(Tool.Title, "Read pull request guide")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, true);
+
+const PullRequestStatusTool = Tool.make("pull_request_status", {
+  description:
+    "Cached PR head, failing/waiting check names, review decision and mergeability. Replaces gh pr view/checks and gh run view. Quote final report line; read once per decision. Parents use watch_pull_request; subagents report.",
+  parameters: Schema.Struct({
+    environmentId: OrchestratorMcpEnvironmentTarget,
+    ...PullRequestStatusInput.fields,
+  }),
+  success: PullRequestStatusReport,
+  failure: PullRequestToolError,
+  dependencies: readDependencies,
+})
+  .annotate(Tool.Title, "Pull request status")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, true);
+
+const PullRequestFailuresTool = Tool.make("pull_request_failures", {
+  description:
+    "One PR's failed steps, annotations and bounded error log excerpts. Replaces gh run view --log-failed and job logs API.",
+  parameters: Schema.Struct({
+    environmentId: OrchestratorMcpEnvironmentTarget,
+    ...PullRequestFailuresInput.fields,
+  }),
+  success: Schema.Union([PullRequestFailureReport, PullRequestRateLimited]),
+  failure: PullRequestToolError,
+  dependencies: readDependencies,
+})
+  .annotate(Tool.Title, "Pull request CI failures")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, true);
+
+const PullRequestFeedbackTool = Tool.make("pull_request_feedback", {
+  description:
+    "One PR's unresolved review threads, verdicts, comments and bot findings, newest first. Call per PR; replaces reviews, comments and reviewThreads APIs.",
+  parameters: Schema.Struct({
+    environmentId: OrchestratorMcpEnvironmentTarget,
+    ...PullRequestReadInput.fields,
+  }),
+  success: Schema.Union([PullRequestFeedbackReport, PullRequestRateLimited]),
+  failure: PullRequestToolError,
+  dependencies: readDependencies,
+})
+  .annotate(Tool.Title, "Pull request feedback")
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true)
@@ -889,6 +949,9 @@ export const PullRequestsToolkit = Toolkit.make(
   UnwatchPullRequestTool,
   WritePullRequestGuidesTool,
   ReadPullRequestGuideTool,
+  PullRequestStatusTool,
+  PullRequestFailuresTool,
+  PullRequestFeedbackTool,
   ReadPullRequestTool,
   ListPullRequestsTool,
   CreatePullRequestTool,

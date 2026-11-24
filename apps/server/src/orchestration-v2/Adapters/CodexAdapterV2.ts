@@ -1636,6 +1636,12 @@ const CODEX_T3_MCP_TOOL_TIMEOUT_SEC = 65 * 60;
 const CODEX_T3_DIRECT_MCP_SERVER = "t3-code-direct";
 const CODEX_DIRECT_ONLY_T3_TOOLS = ["t3_thread_wait", "delegate_task"];
 
+const decodeCodexShellEnvironment = Schema.decodeUnknownOption(
+  Schema.Struct({
+    shell_environment_policy: Schema.Struct({ set: Schema.Record(Schema.String, Schema.String) }),
+  }),
+);
+
 /** Names of the stdio MCP servers in a `config/read` config, the ones Codex starts per thread. */
 function codexStdioMcpServerNames(mcpServers: unknown): ReadonlyArray<string> {
   if (mcpServers === null || typeof mcpServers !== "object") return [];
@@ -1654,6 +1660,7 @@ function codexStdioMcpServerNames(mcpServers: unknown): ReadonlyArray<string> {
 function codexThreadRuntimeParams(input: {
   readonly threadId: ThreadId | null;
   readonly mcpSession: McpProviderSession.McpProviderSessionConfig | undefined;
+  readonly environment: NodeJS.ProcessEnv;
   readonly stdioMcpServers?: ReadonlyArray<string>;
   readonly modelSelection?: { readonly model: string };
   readonly runtimePolicy?: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
@@ -1663,6 +1670,12 @@ function codexThreadRuntimeParams(input: {
   readonly config: Readonly<Record<string, Schema.Json>>;
 } {
   const { mcpSession } = input;
+  const managedPath =
+    input.environment.T3_GH_SHIM_DIR === undefined
+      ? undefined
+      : input.environment[
+          Object.keys(input.environment).find((key) => key.toUpperCase() === "PATH") ?? "PATH"
+        ];
   const t3Server =
     mcpSession === undefined
       ? undefined
@@ -1676,6 +1689,9 @@ function codexThreadRuntimeParams(input: {
     ...(input.modelSelection === undefined ? {} : { model: input.modelSelection.model }),
     config: {
       ...CODEX_THREAD_CONFIG,
+      // Reapply the hydrated startup PATH after Codex's snapshot, retaining startup profile
+      // tools and our gh launcher. Login profiles stay enabled. Explicit user PATH config wins.
+      ...(managedPath === undefined ? {} : { "shell_environment_policy.set.PATH": managedPath }),
       // One app-server serves many threads, so the id goes in per-thread shell config, not its env.
       ...(input.threadId === null
         ? {}
@@ -2117,15 +2133,16 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     }),
                 ),
               );
+        const environment = resolvedRuntime?.environment ?? adapterOptions.environment;
         const client = yield* clientFactory.open({
           instanceId: adapterOptions.instanceId,
           threadId: input.threadId,
           providerSessionId: input.providerSessionId,
           runtimePolicy: input.runtimePolicy,
           settings: resolvedRuntime?.config ?? adapterOptions.settings,
-          environment: resolvedRuntime?.environment ?? adapterOptions.environment,
+          environment,
         });
-        const codexZone = codexTimeZone(resolvedRuntime?.environment ?? adapterOptions.environment);
+        const codexZone = codexTimeZone(environment);
         const additionalContextByThread = yield* Ref.make(
           new Map<string, NonNullable<CodexTurnStartParams["additionalContext"]>>(),
         );
@@ -2270,6 +2287,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 },
               }),
             );
+        // Workspaces whose Codex config sets its own shell PATH; the managed gh PATH yields to it.
+        const configuredShellPaths = yield* Ref.make(new Set<string>());
         // Read per thread: a workspace's project config can add its own servers.
         const readStdioMcpServers = (cwd: string | null | undefined) =>
           ensureInitialized.pipe(
@@ -2279,6 +2298,20 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 includeLayers: false,
               }),
             ),
+            Effect.tap((response) =>
+              Ref.update(configuredShellPaths, (current) => {
+                const next = new Set(current);
+                const configured = decodeCodexShellEnvironment(response.config);
+                const hasPath =
+                  Option.isSome(configured) &&
+                  Object.keys(configured.value.shell_environment_policy.set).some(
+                    (key) => key.toUpperCase() === "PATH",
+                  );
+                if (hasPath) next.add(cwd ?? "");
+                else next.delete(cwd ?? "");
+                return next;
+              }),
+            ),
             Effect.map((response) => codexStdioMcpServerNames(response.config.mcp_servers)),
             Effect.catch(() =>
               Effect.logDebug("Codex config read failed.").pipe(
@@ -2286,6 +2319,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               ),
             ),
             withAppServerDeadline("config/read"),
+          );
+        const threadEnvironment = (cwd: string | null | undefined) =>
+          Ref.get(configuredShellPaths).pipe(
+            Effect.map((configured) => (configured.has(cwd ?? "") ? {} : environment)),
           );
         const now = yield* DateTime.now;
         const session = providerSession({
@@ -8052,6 +8089,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   resumeNativeThread(threadId, {
                     excludeTurns: true,
                     ...codexThreadRuntimeParams({
+                      environment: {},
                       threadId: providerThread.appThreadId,
                       mcpSession,
                       stdioMcpServers,
@@ -8228,9 +8266,17 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 ]),
               ),
               Effect.flatMap(([mcpSession, stdioMcpServers]) =>
+                Effect.map(threadEnvironment(threadInput.runtimePolicy.cwd), (environment) => ({
+                  mcpSession,
+                  stdioMcpServers,
+                  environment,
+                })),
+              ),
+              Effect.flatMap(({ mcpSession, stdioMcpServers, environment }) =>
                 client.request("thread/start", {
                   ...codexThreadRuntimeParams({
                     threadId: threadInput.threadId,
+                    environment,
                     mcpSession,
                     stdioMcpServers,
                     modelSelection: threadInput.modelSelection,
@@ -8273,6 +8319,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   threadId: appThreadId,
                   mcpSession: yield* readMcpSession(appThreadId),
                   stdioMcpServers: yield* readStdioMcpServers(threadInput.runtimePolicy?.cwd),
+                  environment: yield* threadEnvironment(threadInput.runtimePolicy?.cwd),
                   ...(threadInput.modelSelection === undefined
                     ? {}
                     : { modelSelection: threadInput.modelSelection }),
@@ -9285,6 +9332,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     threadId: threadInput.providerThread.appThreadId,
                     mcpSession: yield* readMcpSession(threadInput.providerThread.appThreadId),
                     stdioMcpServers: yield* readStdioMcpServers(undefined),
+                    environment: {},
                   }),
                 });
               }
@@ -9333,6 +9381,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   threadId: threadInput.targetThreadId,
                   mcpSession: yield* mcpSessions.read(threadInput.targetThreadId),
                   stdioMcpServers: yield* readStdioMcpServers(threadInput.runtimePolicy?.cwd),
+                  environment: yield* threadEnvironment(threadInput.runtimePolicy?.cwd),
                   ...(threadInput.modelSelection === undefined
                     ? {}
                     : { modelSelection: threadInput.modelSelection }),

@@ -36,6 +36,10 @@ import {
   type ClaudeLedgerUsage,
   type ClaudeModelLedger,
 } from "../../provider/ClaudeTurnTokenUsage.ts";
+import {
+  decideGitHubCommand,
+  type GitHubCommandDecision,
+} from "../../sourceControl/agentGitHubReads.ts";
 import { toMcpElicitationResponse } from "../../provider/CodexMcpElicitation.ts";
 import {
   type CanUseTool,
@@ -228,7 +232,10 @@ import {
   T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH,
   T3_CODE_ORCHESTRATION_INSTRUCTIONS,
 } from "@t3tools/provider-core/server/orchestrationInstructions";
-import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
+import {
+  GITHUB_READS_INSTRUCTIONS,
+  buildRuntimeInstructions,
+} from "@t3tools/provider-core/server/runtimeInstructions";
 import {
   mcpToolPresentation,
   normalizeMcpText,
@@ -2448,13 +2455,39 @@ Text you write before a tool call may reach the user only as a one-line summary.
 `;
 
 // Native subagents start from their task, not this session's system prompt.
-const subagentDeviceInstructions: HookCallback = () =>
-  Promise.resolve({
-    hookSpecificOutput: {
-      hookEventName: "SubagentStart",
-      additionalContext: T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH,
-    },
-  });
+const subagentInstructions =
+  (deviceInstructions: boolean): HookCallback =>
+  () =>
+    Promise.resolve({
+      hookSpecificOutput: {
+        hookEventName: "SubagentStart",
+        additionalContext: [
+          GITHUB_READS_INSTRUCTIONS,
+          ...(deviceInstructions ? [T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH] : []),
+        ].join("\n\n"),
+      },
+    });
+
+// Native subagents' Bash calls run through the parent's hooks, so one gate covers both.
+const gitHubReadGate: HookCallback = (input) => {
+  const command =
+    input.hook_event_name === "PreToolUse" && input.tool_name === "Bash"
+      ? (input.tool_input as { readonly command?: unknown }).command
+      : undefined;
+  const decision: GitHubCommandDecision =
+    typeof command === "string" ? decideGitHubCommand(command) : { allow: true };
+  return Promise.resolve(
+    decision.allow
+      ? {}
+      : {
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "deny",
+            permissionDecisionReason: decision.reason,
+          },
+        },
+  );
+};
 
 export function makeClaudeQueryOptions(input: {
   readonly modelSelection: ModelSelection;
@@ -2475,6 +2508,8 @@ export function makeClaudeQueryOptions(input: {
   readonly agentFeedback?: AgentFeedbackMode;
   /** The thread's T3 MCP session holds the `device` capability. */
   readonly deviceToolsAvailable?: boolean;
+  /** `enableAgentGitHubReadGate`; off lets Bash run every `gh` read. */
+  readonly gitHubReadGate?: boolean;
   readonly tools?: ClaudeAgentSdkQueryTools;
   readonly allowedTools?: ReadonlyArray<string>;
   readonly disallowedTools?: ReadonlyArray<string>;
@@ -2648,16 +2683,19 @@ export function makeClaudeQueryOptions(input: {
         ...launchAppendSystemPrompt,
       ].join("\n\n"),
     },
-    ...(deviceInstructions || input.onStop !== undefined
-      ? {
+    ...(input.mcpServers === undefined && input.onStop === undefined
+      ? {}
+      : {
           hooks: {
-            ...(deviceInstructions
-              ? { SubagentStart: [{ hooks: [subagentDeviceInstructions] }] }
-              : {}),
+            ...(input.mcpServers === undefined || input.gitHubReadGate === false
+              ? {}
+              : { PreToolUse: [{ matcher: "Bash", hooks: [gitHubReadGate] }] }),
+            ...(input.mcpServers === undefined
+              ? {}
+              : { SubagentStart: [{ hooks: [subagentInstructions(deviceInstructions)] }] }),
             ...(input.onStop === undefined ? {} : { Stop: [{ hooks: [input.onStop] }] }),
           },
-        }
-      : {}),
+        }),
     ...(pluginDirectories.length === 0
       ? {}
       : { plugins: pluginDirectories.map((path) => ({ type: "local" as const, path })) }),
@@ -2775,6 +2813,14 @@ export const CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS: ReadonlyArray<string> = [
   "mcp__t3-code__t3_theme_read",
   "mcp__t3-code__html_preview",
   "mcp__t3-code__html_render",
+  "mcp__t3-code__list_thread_pull_requests",
+  "mcp__t3-code__read_pull_request_guide",
+  "mcp__t3-code__pull_request_status",
+  "mcp__t3-code__pull_request_failures",
+  "mcp__t3-code__pull_request_feedback",
+  "mcp__t3-code__pull_request_read",
+  "mcp__t3-code__pull_request_list",
+  "mcp__t3-code__ci_logs",
   "mcp__t3-code__send_to_user",
   "mcp__t3-code__t3_submit_output",
 ];
@@ -13589,24 +13635,22 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const shouldResume =
             resumeSessionAt !== undefined || openedWithResume || hasPersistedProviderTurn;
           // T3's pstack pack replaces a native install; two copies register conflicting skills.
-          const pstackPluginOverrides =
-            Option.isSome(serverSettings) &&
-            (yield* serverSettings.value.getSettings.pipe(
-              Effect.map((settings) => settings.pstackEnabled),
-              Effect.orElseSucceed(() => false),
-            ))
-              ? claudePstackPluginOverrides(
-                  yield* readClaudeEnabledPlugins(
-                    adapterOptions.settings,
-                    turnInput.runtimePolicy.cwd ?? undefined,
-                    adapterOptions.environment,
-                  ).pipe(
-                    Effect.provideService(FileSystem.FileSystem, fileSystem),
-                    Effect.provideService(Path.Path, path),
-                  ),
-                  launchArgSettings?.enabledPlugins,
-                )
-              : undefined;
+          const currentServerSettings = Option.isSome(serverSettings)
+            ? yield* serverSettings.value.getSettings.pipe(Effect.orElseSucceed(() => undefined))
+            : undefined;
+          const pstackPluginOverrides = currentServerSettings?.pstackEnabled
+            ? claudePstackPluginOverrides(
+                yield* readClaudeEnabledPlugins(
+                  adapterOptions.settings,
+                  turnInput.runtimePolicy.cwd ?? undefined,
+                  adapterOptions.environment,
+                ).pipe(
+                  Effect.provideService(FileSystem.FileSystem, fileSystem),
+                  Effect.provideService(Path.Path, path),
+                ),
+                launchArgSettings?.enabledPlugins,
+              )
+            : undefined;
           const launchSdkSettings =
             launchArgSettings === undefined
               ? undefined
@@ -13621,6 +13665,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     ...pstackPluginOverrides,
                   },
                 } as ClaudeSdkSettings);
+          const gitHubReadGate = currentServerSettings?.enableAgentGitHubReadGate ?? true;
           const queryOptions = makeClaudeQueryOptions({
             agentFeedback: turnInput.agentFeedback ?? "off",
             modelSelection: turnInput.modelSelection,
@@ -13655,6 +13700,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ? {}
               : { mcpServers: mcpOverrides.mcpServers }),
             deviceToolsAvailable: mcpSession?.capabilities?.has("device") === true,
+            gitHubReadGate,
             permissionMode: queryPolicy.permissionMode,
             ...(queryPolicy.allowDangerouslySkipPermissions === undefined
               ? {}

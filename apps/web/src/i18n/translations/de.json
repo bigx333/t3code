@@ -12842,5 +12842,8 @@
   "f7f4d6177d296344": "Ein Modell in diesen Thread einladen",
   "e900dd59c72920b8": "Lade Modelle beliebiger Anbieter in einen gemeinsamen Thread ein. Sprich alle an oder mit @ nur eines und lass sie einander antworten. Wenn du die Funktion deaktivierst, sind keine neuen Einladungen mehr möglich. In einer laufenden Gruppe kannst du weiterhin Mitglieder entfernen oder die Gruppe beenden.",
   "1e202ed0dfd0ab8e": "Gruppenunterhaltungen",
-  "9c544a42f8b60457": "beta modelle einladen mehrere anbieter peers plätze miteinander sprechen diskutieren teilnehmerliste @ gemeinsam chatten"
+  "9c544a42f8b60457": "beta modelle einladen mehrere anbieter peers plätze miteinander sprechen diskutieren teilnehmerliste @ gemeinsam chatten",
+  "aed5b53ddeaf355a": "T3 leitet unterstützte Lesezugriffe mit {command} aus lokalen Agentensitzungen an seine gemeinsamen PR-Tools weiter. Deaktiviere diese Option, um direkte Lesezugriffe zuzulassen. Die Änderung gilt beim nächsten Start einer Agentensitzung.",
+  "dea618d43854f342": "Standard-Lesefreigabe für GitHub zurücksetzen",
+  "8032cb028928fc47": "GitHub-Lesezugriffe von Agenten über T3 leiten"
 }

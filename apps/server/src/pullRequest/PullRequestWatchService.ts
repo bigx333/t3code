@@ -16,11 +16,11 @@ import * as Schema from "effect/Schema";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as PullRequestService from "./PullRequestService.ts";
 import {
-  resolveTarget,
   type PullRequestTarget,
   type PullRequestTargetError,
   type ResolvedTarget,
 } from "./pullRequestTarget.ts";
+import { resolvePullRequestTarget } from "./pullRequestTargets.ts";
 import {
   threadPullRequestKeysEqual,
   threadPullRequestsOf,
@@ -108,7 +108,7 @@ const make = Effect.gen(function* () {
     const project = yield* pullRequests
       .addressedProject(thread.projectId)
       .pipe(Effect.mapError((cause) => new PullRequestWatchFailedError({ cause })));
-    const target = yield* resolveTarget(input.target, project);
+    const target = yield* resolvePullRequestTarget(input.target, project);
     const watchedLink = (shell: OrchestrationV2ThreadShell) =>
       threadPullRequestsOf(shell).find(
         (link) => link.source !== "stack-dismissed" && threadPullRequestKeysEqual(link, target),

@@ -12842,5 +12842,8 @@
   "f7f4d6177d296344": "Inviter un modèle dans ce fil",
   "e900dd59c72920b8": "Invitez des modèles de n’importe quel fournisseur dans un même fil. Adressez-vous à tous ou à un seul avec @ et laissez-les se répondre. Désactiver cette option bloque les nouvelles invitations. Les commandes pour terminer le groupe ou retirer un membre restent disponibles dans les groupes en cours.",
   "1e202ed0dfd0ab8e": "Conversations de groupe",
-  "9c544a42f8b60457": "bêta inviter des modèles plusieurs fournisseurs pairs sièges parler entre eux discuter participants @ discuter ensemble"
+  "9c544a42f8b60457": "bêta inviter des modèles plusieurs fournisseurs pairs sièges parler entre eux discuter participants @ discuter ensemble",
+  "aed5b53ddeaf355a": "T3 redirige les opérations de lecture de {command} prises en charge depuis les sessions locales des agents vers ses outils partagés de pull requests. Désactivez cette option pour autoriser les lectures directes. La modification prend effet au prochain démarrage d’une session d’agent.",
+  "dea618d43854f342": "Rétablir le réglage par défaut du contrôle d’accès en lecture à GitHub",
+  "8032cb028928fc47": "Faire passer les lectures GitHub des agents par T3"
 }

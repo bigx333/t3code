@@ -12851,5 +12851,8 @@
   "f7f4d6177d296344": "Invite a model into this thread",
   "e900dd59c72920b8": "Invite models from any provider into one thread. Talk to all of them or one with @, and let them answer each other. Off stops new invites; a running group keeps its End and Remove controls.",
   "1e202ed0dfd0ab8e": "Group conversations",
-  "9c544a42f8b60457": "beta invite models multiple providers peers seats talk each other discuss roster @ chat together"
+  "9c544a42f8b60457": "beta invite models multiple providers peers seats talk each other discuss roster @ chat together",
+  "aed5b53ddeaf355a": "T3 sends supported {command} reads from local agent sessions to its shared PR tools. Turn this off to allow direct reads. The change applies when an agent session next starts.",
+  "dea618d43854f342": "Reset default GitHub read gate to default",
+  "8032cb028928fc47": "Send agents' GitHub reads through T3"
 }

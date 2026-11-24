@@ -1,3 +1,4 @@
+import { makeGitHubCheckFailureReader } from "./gitHubCheckFailures.ts";
 import { isCommitSha, normalizeHost } from "@t3tools/source-control-core/server/pullRequestUtils";
 import {
   diffFileSection,
@@ -574,7 +575,21 @@ export class GitHubPullRequestApi extends Context.Service<
     }) => Effect.Effect<GitHubPullRequestWatchFingerprint | null, GitHubPullRequestApiError>;
     readonly pullRequestEvents: Effect.Success<typeof GitHubPullRequestEvents.make>;
 
+    readonly getCheckFailure: Effect.Success<typeof makeGitHubCheckFailureReader>;
     readonly revalidateChecks: Effect.Success<typeof makeChecksRevalidator>;
+
+    readonly getPullRequestChecks: (input: {
+      readonly cwd: string;
+      readonly repository: string;
+      readonly host: string;
+      readonly number: number;
+    }) => Effect.Effect<
+      Pick<
+        GitHubPullRequestCore,
+        "state" | "checks" | "headSha" | "headBranch" | "headRepositoryOwner" | "isCrossRepository"
+      >,
+      GitHubPullRequestApiError
+    >;
 
     readonly getPullRequestDetail: (input: {
       readonly cwd: string;
@@ -1079,6 +1094,7 @@ export const make = Effect.gen(function* () {
   const sourceControlHost = yield* SourceControlHost.SourceControlHost;
   const fileSystem = yield* FileSystem.FileSystem;
   const revalidateChecks = yield* makeChecksRevalidator;
+  const getCheckFailure = yield* makeGitHubCheckFailureReader;
   const client = yield* GraphQLClient.make(PullRequestGraphQLGroup).pipe(
     Effect.provide(GitHubGraphQlClient.layer),
   );
@@ -1124,6 +1140,22 @@ export const make = Effect.gen(function* () {
               const cached = routingIdentities.get(key);
               if (cached !== undefined && now - cached.at < 10 * 60_000)
                 return { ...credential, ...cached.value };
+              const viewerIdentity = client.RoutingIdentityViewer({}).pipe(
+                GitHubGraphQlClient.call({
+                  host,
+                  operation: "getRoutingIdentity",
+                  allowReserve: true,
+                }),
+                Effect.catchTags({
+                  GraphQLClientError: () => Effect.fail(unavailable()),
+                }),
+                Effect.flatMap(({ viewer }) =>
+                  decodeViewerIdentity({
+                    id: viewer.databaseId,
+                    login: viewer.login,
+                  }).pipe(Effect.mapError(unavailable)),
+                ),
+              );
               // Pin verification so an auth switch cannot poison its cache entry.
               const identity = yield* api
                 .rest({ host, operation: "getRoutingIdentity", path: "user", allowReserve: true })
@@ -1132,24 +1164,16 @@ export const make = Effect.gen(function* () {
                     decodeRoutingIdentity(response.body).pipe(Effect.mapError(unavailable)),
                   ),
                   Effect.catchTags({
-                    // The enclosing operation owns the span for this inline handler.
-                    GitHubApiResponseError: Effect.fnUntraced(function* (error) {
-                      if (error.status !== 403) return yield* error;
-                      const { viewer } = yield* client.RoutingIdentityViewer({}).pipe(
-                        GitHubGraphQlClient.call({
-                          host,
-                          operation: "getRoutingIdentity",
-                          allowReserve: true,
-                        }),
-                        Effect.catchTags({
-                          GraphQLClientError: () => Effect.fail(unavailable()),
-                        }),
-                      );
-                      return yield* decodeViewerIdentity({
-                        id: viewer.databaseId,
-                        login: viewer.login,
-                      }).pipe(Effect.mapError(unavailable));
-                    }),
+                    GitHubApiResponseError: (error) =>
+                      error.status === 403 ? viewerIdentity : Effect.fail(error),
+                    GitHubApiRateLimitError: (error) =>
+                      error.resource === "core" ? viewerIdentity : Effect.fail(error),
+                    SourceControlRateLimitPausedError: (error) =>
+                      error.resource === "core" &&
+                      (error.pauseReason === "quota-exhausted" ||
+                        error.pauseReason === "reserve-protected")
+                        ? viewerIdentity
+                        : Effect.fail(error),
                   }),
                   Effect.provideService(GitHubRequestPolicy.PinnedGitHubCredential, credential),
                   Effect.provideService(SourceControlRateLimit.CredentialScope, key),
@@ -1557,9 +1581,10 @@ export const make = Effect.gen(function* () {
     input: Parameters<GitHubPullRequestApi["Service"]["getPullRequestDetail"]>[0],
     allowReserve: boolean,
     first: NonNullable<ReturnType<typeof toPullRequestCheckContextsPage>>,
+    operation = "getPullRequestDetail",
   ) {
     const { owner, name } = parseRepositorySelector(input.repository);
-    const target = { ...input, operation: "getPullRequestDetail", allowReserve };
+    const target = { ...input, operation, allowReserve };
     const contexts = [...first.contexts];
     let after = first.nextCursor;
     for (let page = 1; after !== null && page < CHECK_CONTEXT_PAGES; page++) {
@@ -1576,15 +1601,54 @@ export const make = Effect.gen(function* () {
       if (next === null || next.headSha !== first.headSha) {
         return yield* readError(
           input.cwd,
-          "getPullRequestDetail",
+          operation,
           new Error("Pull request head changed while reading checks."),
         );
       }
-      if (next.nextCursor === after) return { contexts, truncated: true };
+      if (next.nextCursor === after) return { ...first, contexts, truncated: true };
       contexts.push(...next.contexts);
       after = next.nextCursor;
     }
-    return { contexts, truncated: first.nextCursor === null || after !== null };
+    return { ...first, contexts, truncated: first.nextCursor === null || after !== null };
+  });
+
+  const getPullRequestChecks: GitHubPullRequestApi["Service"]["getPullRequestChecks"] = Effect.fn(
+    "GitHubPullRequestApi.getPullRequestChecks",
+  )(function* (input) {
+    const { owner, name } = parseRepositorySelector(input.repository);
+    const allowReserve = yield* SourceControlRateLimit.Interactive;
+    const target = { ...input, operation: "getPullRequestChecks", allowReserve };
+    const first = yield* client
+      .PullRequestCheckContexts({
+        owner,
+        name,
+        number: input.number,
+        required: asksRequired(input.host),
+      })
+      .pipe(
+        graphql(target),
+        Effect.map(toPullRequestCheckContextsPage),
+        Effect.flatMap(found(target)),
+      );
+    const all =
+      first.nextCursor === null
+        ? { ...first, truncated: false }
+        : yield* readAllCheckContexts(input, allowReserve, first, target.operation);
+    if (all.truncated) {
+      return yield* readError(
+        input.cwd,
+        "getPullRequestChecks",
+        new Error("Pull request checks were truncated."),
+      );
+    }
+    return {
+      state: all.state,
+      headSha: all.headSha,
+      headBranch: all.headBranch,
+      headRepositoryOwner: all.headRepositoryOwner,
+      isCrossRepository: all.isCrossRepository,
+      checks: pullRequestChecksFromContexts(all.contexts).checks,
+    };
   });
 
   // GitHub refuses a requested-reviewer list holding a team the viewer cannot see. Remember the
@@ -1936,6 +2000,7 @@ export const make = Effect.gen(function* () {
   return GitHubPullRequestApi.of({
     withVerifiedCredential,
     revalidateChecks,
+    getCheckFailure,
     getRoutingIdentity,
     getViewerLogin: Effect.fn("GitHubPullRequestApi.getViewerLogin")(function (input) {
       return getRoutingIdentity(input).pipe(Effect.map((identity) => identity.viewer));
@@ -2185,6 +2250,7 @@ export const make = Effect.gen(function* () {
     getPullRequestWatchFingerprint,
     pullRequestEvents: yield* GitHubPullRequestEvents.make,
 
+    getPullRequestChecks,
     getPullRequestDetail,
     getPullRequestPreview: Effect.fn("GitHubPullRequestApi.getPullRequestPreview")(
       function (input) {

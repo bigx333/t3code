@@ -1,6 +1,6 @@
 import * as NodeV8 from "node:v8";
 
-import { SourceControlProviderKind } from "@t3tools/contracts";
+import { ProviderDriverKind, SourceControlProviderKind } from "@t3tools/contracts";
 import * as Stream from "effect/Stream";
 import {
   EventId,
@@ -34,6 +34,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Metric from "effect/Metric";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import { ChildProcessSpawner } from "effect/process";
@@ -189,6 +190,7 @@ interface HarnessOptions {
   readonly stack?: (
     input: PullRequestRef,
   ) => Effect.Effect<PullRequestStack | null, PullRequestOperationError>;
+  readonly onLink?: Effect.Effect<void>;
   readonly onSync?: (command: SyncCommand) => Effect.Effect<unknown>;
 }
 
@@ -231,6 +233,7 @@ const makeHarness = Effect.fn("makePullRequestSyncHarness")(function* (options: 
     }
     if (command.type === "thread.pull-request.link") {
       return Ref.update(linkCommands, (recorded) => [...recorded, command]).pipe(
+        Effect.andThen(options.onLink ?? Effect.void),
         Effect.as({ sequence: 1, storedEvents: [] }),
       );
     }
@@ -2337,6 +2340,58 @@ describe("PullRequestSyncReactor", () => {
         );
       }).pipe(Effect.provide(fixture.layer));
     }),
+  );
+
+  it.effect("counts a forge command once while a link dispatch is blocked", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse(NOW));
+        const fixture = yield* makeHarness({ snapshot: mergingSnapshot(), onLink: Effect.never });
+
+        yield* Effect.gen(function* () {
+          const reactor = yield* startAndSweep(fixture);
+          const child = ThreadId.make("counted-child");
+          const ran = {
+            ...commandRan(child, "gh pr checks 4497 --json bucket", "[]", "checks"),
+            driver: ProviderDriverKind.make("counted-driver"),
+          };
+          yield* linksFrom(fixture, reactor, [
+            commandRan(
+              child,
+              "gh pr create --fill",
+              "https://github.com/owner/repository/pull/124",
+            ),
+            ran,
+            ran,
+            runUpdated(child, "completed"),
+          ]);
+
+          const counted = (yield* Metric.snapshot).filter(
+            (snapshot) =>
+              snapshot.id === "t3_agent_forge_commands_total" &&
+              snapshot.attributes?.["provider"] === "counted-driver",
+          );
+          assert.deepStrictEqual(
+            counted.map((snapshot) => [
+              snapshot.attributes,
+              (snapshot.state as Metric.CounterState<number>).count,
+            ]),
+            [
+              [
+                {
+                  forge: "github",
+                  kind: "read",
+                  intent: "status",
+                  provider: "counted-driver",
+                  bypass: "false",
+                },
+                1,
+              ],
+            ],
+          );
+        }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
   );
 
   it.effect("links a created pull request once its command settles, with one command id", () =>

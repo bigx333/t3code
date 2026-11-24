@@ -16,6 +16,7 @@ import {
   toLabelCandidates,
   toPullRequestActivityPage,
   toPullRequestCore,
+  toPullRequestSummary,
   toPullRequestFilesViewedPage,
   toPullRequestRows,
   toReviewerCandidates,
@@ -24,7 +25,7 @@ import {
   toReviewThreadPage,
   toViewerPermissions,
 } from "./gitHubPullRequestJson.ts";
-import { PullRequestWatchFingerprint } from "./pullRequestBatches.graphql.ts";
+import { PullRequestSummary, PullRequestWatchFingerprint } from "./pullRequestBatches.graphql.ts";
 import {
   LabelCandidates,
   PullRequestActivity,
@@ -350,6 +351,8 @@ describe("pull request detail decoding", () => {
         }
       : {
           __typename: "CheckRun",
+          databaseId: null,
+          title: null,
           name: "",
           status: "COMPLETED",
           conclusion: null,
@@ -369,7 +372,12 @@ describe("pull request detail decoding", () => {
     check({
       ...fields,
       checkSuite: {
-        workflowRun: { event, runNumber, workflow: { id: workflowId, name: workflowName } },
+        workflowRun: {
+          runAttempt: 1,
+          event,
+          runNumber,
+          workflow: { id: workflowId, name: workflowName },
+        },
       },
     });
 
@@ -467,6 +475,25 @@ describe("pull request detail decoding", () => {
       expect(detail.canEditMaintainerEdits).toBe(allowed);
     },
   );
+
+  it("preserves check handles, output titles and unknown required status", () => {
+    const detail = detailOf([
+      inWorkflow({
+        name: "lint",
+        databaseId: 123,
+        title: "Two errors",
+        workflowName: "CI",
+        conclusion: "FAILURE",
+      }),
+      check({ __typename: "StatusContext", context: "external", state: "SUCCESS" }),
+    ]);
+    expect(detail.checks).toMatchObject([
+      { name: "lint", handle: "github-check:123:1", summary: "Two errors" },
+      { name: "external" },
+    ]);
+    expect(detail.checks[0]).not.toHaveProperty("required");
+    expect(detail.checks[1]).not.toHaveProperty("handle");
+  });
 
   const detailJson = JSON.stringify({
     comments: [{ id: "c1", body: "second", createdAt: "2026-07-04T00:00:00Z" }],
@@ -1994,5 +2021,25 @@ describe("pull request watch fingerprints", () => {
     // GitHub's totalCount counts every timeline item, whatever itemTypes asks for.
     const queued = fingerprint({ ...base, timelineItems: 4 });
     expect(queued.status).toBe(before.status);
+  });
+});
+
+const decodeSummary = Schema.decodeUnknownSync(PullRequestSummary.result);
+
+describe("toPullRequestSummary", () => {
+  it("keeps the head commit selected by the summary query", () => {
+    const decoded = decodeSummary({
+      repository: {
+        pullRequest: row({
+          headRefOid: "new-head",
+          closedAt: null,
+          additions: 1,
+          deletions: 0,
+          changedFiles: 1,
+          commits: { nodes: [] },
+        }),
+      },
+    });
+    expect(toPullRequestSummary(decoded.repository!.pullRequest!).headSha).toBe("new-head");
   });
 });

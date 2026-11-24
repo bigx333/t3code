@@ -397,6 +397,21 @@ a teammate approves, the thread stays in **Working** until the pull request merg
 watch stays on and still wakes the agent on new comments, failed checks or conflicts, and a watched
 thread never auto-settles.
 
+Agents read a pull request's status, failed checks, and review feedback through T3. These tools
+reuse the app's cached data and watches. T3 redirects supported `gh` reads from local agent
+sessions, including Claude and Codex, to these tools. Writes and unsupported reads still use
+`gh`. For a read the tools cannot answer, prefix the command with `T3_GH_DIRECT=1`.
+
+To allow direct reads, turn off **Send agents' GitHub reads through T3** in **Settings → Source
+control**. The change applies when an agent session next starts. The setting covers ordinary
+`gh` commands found on the agent's PATH; shell overrides, absolute executable paths, and
+externally hosted providers can run outside it.
+
+When quota runs low, T3 pauses background refreshes to protect a reserve for interactive actions.
+The message distinguishes this pause from exhausted quota or a GitHub throttle. REST and
+GraphQL have separate primary quotas; a GitHub secondary throttle pauses both. Cached data
+remains available during a pause.
+
 Cross-repository links use a project on the same host. Azure DevOps reviews require a project checked
 out from the matching organization and repository.
 

@@ -12849,5 +12849,8 @@
   "f7f4d6177d296344": "Bjud in en modell till den här tråden",
   "e900dd59c72920b8": "Bjud in modeller från valfri leverantör till samma tråd. Skriv till alla eller använd @ för att vända dig till en av dem. Modellerna kan svara varandra. Om du stänger av funktionen stoppas nya inbjudningar. I en pågående grupp kan du fortfarande avsluta samtalet och ta bort deltagare.",
   "1e202ed0dfd0ab8e": "Gruppkonversationer",
-  "9c544a42f8b60457": "beta bjud in modeller flera leverantörer deltagare platser prata med varandra diskutera deltagarlista @ chatta tillsammans"
+  "9c544a42f8b60457": "beta bjud in modeller flera leverantörer deltagare platser prata med varandra diskutera deltagarlista @ chatta tillsammans",
+  "aed5b53ddeaf355a": "T3 skickar läsanrop som stöds för {command} från lokala agentsessioner till sina gemensamma PR-verktyg. Stäng av detta för att tillåta direktläsning. Ändringen gäller nästa gång en agentsession startar.",
+  "dea618d43854f342": "Återställ läsbegränsningen för GitHub till standard",
+  "8032cb028928fc47": "Låt agenternas läsanrop till GitHub gå via T3"
 }

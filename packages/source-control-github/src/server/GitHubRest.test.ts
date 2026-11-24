@@ -1,3 +1,5 @@
+import { makeGitHubCheckFailureReader } from "./gitHubCheckFailures.ts";
+import * as Metric from "effect/Metric";
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -18,7 +20,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as Tracer from "effect/Tracer";
 import { ChildProcessSpawner } from "effect/process";
 import { VcsProcessTimeoutError } from "@t3tools/contracts";
-import { HttpClient, HttpClientResponse, HttpClientRequest } from "effect/http";
+import { FetchHttpClient, HttpClient, HttpClientResponse, HttpClientRequest } from "effect/http";
 import { GraphQLClient } from "effect/graphql";
 
 import * as GitHubRest from "./GitHubRest.ts";
@@ -44,6 +46,28 @@ const NOW = Date.parse("2026-10-05T12:00:00.000Z");
 
 function harness(respond: (request: HttpClientRequest.HttpClientRequest) => Response) {
   const requests: Array<HttpClientRequest.HttpClientRequest> = [];
+  const http = Layer.succeed(
+    HttpClient.HttpClient,
+    HttpClient.make((request) => {
+      requests.push(request);
+      return Effect.succeed(HttpClientResponse.fromWeb(request, respond(request)));
+    }),
+  );
+  return { ...harnessWith(http), requests };
+}
+
+/** The production transport: fetch decides what a redirect looks like to T3. */
+function fetchHarness(respond: (url: string) => Response) {
+  const calls: Array<{ readonly url: string; readonly init: RequestInit }> = [];
+  const fetch: typeof globalThis.fetch = (input, init) => {
+    const url = input instanceof Request ? input.url : String(input);
+    calls.push({ url, init: init ?? {} });
+    return Promise.resolve(respond(url));
+  };
+  return { ...harnessWith(FetchHttpClient.layer), calls, fetch };
+}
+
+function harnessWith(http: Layer.Layer<HttpClient.HttpClient>) {
   let tokens = ["first", "second"];
   let invalidations = 0;
   let credentialReads = 0;
@@ -69,13 +93,6 @@ function harness(respond: (request: HttpClientRequest.HttpClientRequest) => Resp
         }),
     }),
   );
-  const http = Layer.succeed(
-    HttpClient.HttpClient,
-    HttpClient.make((request) => {
-      requests.push(request);
-      return Effect.succeed(HttpClientResponse.fromWeb(request, respond(request)));
-    }),
-  );
   const layer = GitHubRest.layer.pipe(
     Layer.provide(Layer.mergeAll(credentials, http, appSignedOut)),
     Layer.provideMerge(GitHubQuota.layer),
@@ -83,7 +100,6 @@ function harness(respond: (request: HttpClientRequest.HttpClientRequest) => Resp
   );
   return {
     layer,
-    requests,
     invalidations: () => invalidations,
     credentialReads: () => credentialReads,
   };
@@ -452,7 +468,7 @@ describe("GitHubRest", () => {
     }).pipe(Effect.provide(layer), Effect.withTracer(tracer));
   });
 
-  it.effect("lets an interactive request through a pause a background read recorded", () => {
+  it.effect("honors an exhausted quota for interactive requests until its reset", () => {
     const reset = Math.floor(NOW / 1000) + 600;
     let call = 0;
     const { layer, requests } = harness(() =>
@@ -472,7 +488,7 @@ describe("GitHubRest", () => {
       const read = { host: "github.com", operation: "sweep", path: "repos/acme/web/pulls" };
       yield* Effect.flip(api.rest(read));
       expect((yield* Effect.flip(api.rest(read)))._tag).toBe("SourceControlRateLimitPausedError");
-      const merged = yield* api
+      const merge = api
         .rest({
           host: "github.com",
           operation: "merge",
@@ -480,6 +496,15 @@ describe("GitHubRest", () => {
           path: "repos/acme/web/pulls/7/merge",
         })
         .pipe(Effect.provideService(SourceControlRateLimit.Interactive, true));
+      expect(yield* Effect.flip(merge)).toMatchObject({
+        _tag: "SourceControlRateLimitPausedError",
+        pauseReason: "quota-exhausted",
+        resource: "core",
+        retryAt: reset * 1_000,
+      });
+      expect(requests).toHaveLength(1);
+      yield* TestClock.setTime(reset * 1_000);
+      const merged = yield* merge;
       expect(merged.status).toBe(200);
       expect(requests).toHaveLength(2);
     }).pipe(Effect.provide(layer));
@@ -501,6 +526,11 @@ describe("GitHubRest", () => {
     return Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
       const api = yield* GitHubRest.GitHubRest;
+      const counter = Metric.withAttributes(GitHubRequestPolicy.gitHubRequestsTotal, {
+        resource: "core",
+        status: "304",
+      });
+      const before = yield* Metric.value(counter);
       const notModified = yield* api.rest({
         host: "github.com",
         operation: "checks",
@@ -508,6 +538,7 @@ describe("GitHubRest", () => {
         ifNoneMatch: '"abc"',
       });
       expect(notModified.status).toBe(304);
+      expect((yield* Metric.value(counter)).count - before.count).toBe(1);
       const error = yield* Effect.flip(
         api.rest({ host: "github.com", operation: "checks", path: "repos/acme/web/pulls/7" }),
       );
@@ -671,5 +702,217 @@ describe("GitHubCredentials", () => {
         ),
       ),
     ),
+  );
+});
+
+describe("GitHub check failures", () => {
+  const input = {
+    cwd: "/repo",
+    host: "github.com",
+    repository: "acme/web",
+    check: {
+      name: "lint",
+      status: "failure" as const,
+      description: null,
+      url: null,
+      handle: "github-check:123:1",
+    },
+  };
+  const job = {
+    id: 123,
+    run_id: 456,
+    run_attempt: 1,
+    status: "completed",
+    conclusion: "failure",
+    url: "https://api.github.com/repos/acme/web/actions/jobs/123",
+    run_url: "https://api.github.com/repos/acme/web/actions/runs/456",
+    check_run_url: "https://api.github.com/repos/acme/web/check-runs/123",
+    steps: [{ name: "Run lint", conclusion: "failure" }],
+  };
+  const exitOneAnnotation = {
+    path: ".github",
+    start_line: 0,
+    annotation_level: "failure",
+    message: "Process completed with exit code 1.",
+  };
+
+  it.effect("sees the signed log redirect itself and follows it without Authorization", () => {
+    const { layer, calls, fetch } = fetchHarness((url) => {
+      if (url.includes("/annotations"))
+        return json([
+          {
+            path: ".github",
+            start_line: 0,
+            annotation_level: "failure",
+            message: "Process completed with exit code 1.",
+          },
+          {
+            path: ".github",
+            start_line: 0,
+            annotation_level: "failure",
+            message: "Process completed with exit code 137.",
+          },
+          {
+            path: ".github/workflows/ci.yml",
+            start_line: 0,
+            annotation_level: "failure",
+            message: "Process completed with exit code 1.",
+          },
+          { path: "a.ts", start_line: 4, annotation_level: "failure", message: "bad code" },
+          { path: "budget.json", start_line: 0, annotation_level: "failure", message: "grew" },
+        ]);
+      if (url.endsWith("/logs"))
+        return new Response(null, {
+          status: 302,
+          headers: { location: "https://blob.example/log?signature=secret" },
+        });
+      if (url.startsWith("https://blob.example/"))
+        return new Response(
+          "2026-10-30T12:00:00Z ##[error]bad code\n##[error]Process completed with exit code 1.\n",
+        );
+      return json(job);
+    });
+    return Effect.gen(function* () {
+      const read = yield* makeGitHubCheckFailureReader;
+      const result = yield* read(input);
+      expect(result).toMatchObject({
+        attempt: 1,
+        failedSteps: ["Run lint"],
+        annotations: [
+          { path: ".github", startLine: 0, message: "Process completed with exit code 137." },
+          { path: "a.ts", startLine: 4, message: "bad code" },
+          { path: "budget.json", startLine: 0, message: "grew" },
+        ],
+        log: {
+          _tag: "excerpt",
+          text: "##[error]bad code\n##[error]Process completed with exit code 1.",
+          totalLines: 2,
+          truncated: false,
+        },
+      });
+      expect(result).not.toHaveProperty("required");
+      const authorization = (call: (typeof calls)[number]) =>
+        (call.init.headers as Record<string, string>).authorization;
+      expect(calls.map((call) => [call.url, call.init.redirect, authorization(call)])).toEqual([
+        ["https://api.github.com/repos/acme/web/actions/jobs/123", undefined, "Bearer first"],
+        [
+          "https://api.github.com/repos/acme/web/check-runs/123/annotations?per_page=20",
+          undefined,
+          "Bearer first",
+        ],
+        ["https://api.github.com/repos/acme/web/actions/jobs/123/logs", "manual", "Bearer first"],
+        ["https://blob.example/log?signature=secret", undefined, undefined],
+      ]);
+    }).pipe(Effect.provide(layer), Effect.provideService(FetchHttpClient.Fetch, fetch));
+  });
+
+  it.effect("reads an untouched job from an earlier attempt after a rerun", () => {
+    const { layer } = harness((request) =>
+      request.url.includes("/annotations")
+        ? json([exitOneAnnotation])
+        : request.url.endsWith("/logs")
+          ? new Response("##[error]bad code\n")
+          : json(job),
+    );
+    return Effect.gen(function* () {
+      const read = yield* makeGitHubCheckFailureReader;
+      const result = yield* read({
+        ...input,
+        check: { ...input.check, handle: "github-check:123:2" },
+      });
+      expect(result).toMatchObject({
+        attempt: 1,
+        annotations: [
+          { path: ".github", startLine: 0, message: "Process completed with exit code 1." },
+        ],
+        log: { _tag: "excerpt", text: "##[error]bad code" },
+      });
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect.each([
+    {
+      name: "running",
+      job: { ...job, status: "in_progress" },
+      logStatus: 200,
+      reason: "still-running",
+      requests: 1,
+    },
+    {
+      name: "wrong check",
+      job: { ...job, check_run_url: "https://api.github.com/repos/acme/web/check-runs/999" },
+      logStatus: 200,
+      reason: "not-actions",
+      requests: 1,
+    },
+    {
+      name: "wrong repository",
+      job: { ...job, run_url: "https://api.github.com/repos/other/web/actions/runs/456" },
+      logStatus: 200,
+      reason: "not-actions",
+      requests: 1,
+    },
+    { name: "expired", job, logStatus: 404, reason: "expired", requests: 3 },
+    { name: "gone", job, logStatus: 410, reason: "expired", requests: 3 },
+    { name: "forbidden", job, logStatus: 403, reason: "no-access", requests: 3 },
+  ])("returns $reason for $name without extra reads", (test) => {
+    const { layer, requests } = harness((request) =>
+      request.url.includes("/annotations")
+        ? json([exitOneAnnotation])
+        : request.url.endsWith("/logs")
+          ? json({ message: "Unavailable" }, { status: test.logStatus })
+          : json(test.job),
+    );
+    return Effect.gen(function* () {
+      const read = yield* makeGitHubCheckFailureReader;
+      const result = yield* read(input);
+      expect(result.log).toEqual({ _tag: "unavailable", reason: test.reason });
+      expect(result.annotations).toEqual(
+        test.requests === 3
+          ? [
+              {
+                path: ".github",
+                startLine: 0,
+                level: "failure",
+                message: exitOneAnnotation.message,
+              },
+            ]
+          : [],
+      );
+      expect(requests).toHaveLength(test.requests);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("keeps quota refusals typed and pauses subsequent reads", () => {
+    const { layer, requests } = harness((request) =>
+      request.url.includes("/annotations")
+        ? json([])
+        : request.url.endsWith("/logs")
+          ? json(
+              { message: "API rate limit exceeded" },
+              { status: 403, headers: { "x-ratelimit-remaining": "0", "retry-after": "60" } },
+            )
+          : json(job),
+    );
+    return Effect.gen(function* () {
+      const read = yield* makeGitHubCheckFailureReader;
+      expect((yield* Effect.flip(read(input)))._tag).toBe("GitHubApiRateLimitError");
+      expect((yield* Effect.flip(read(input)))._tag).toBe("SourceControlRateLimitPausedError");
+      expect(requests).toHaveLength(3);
+    }).pipe(Effect.provide(layer));
+  });
+  it.effect.each([403, 404])(
+    "reports an unavailable job (%s) without requesting its logs",
+    (status) => {
+      const { layer, requests } = harness(() => json({ message: "Unavailable" }, { status }));
+      return Effect.gen(function* () {
+        const read = yield* makeGitHubCheckFailureReader;
+        expect((yield* read(input)).log).toEqual({
+          _tag: "unavailable",
+          reason: status === 403 ? "no-access" : "not-actions",
+        });
+        expect(requests).toHaveLength(1);
+      }).pipe(Effect.provide(layer));
+    },
   );
 });

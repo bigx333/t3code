@@ -125,6 +125,8 @@ export const PullRequestSummaryRepositoryPullRequestPullRequest = Schema.Struct(
   mergedAt: Schema.NullOr(Shared.DateTime),
   /** Identifies the date and time when the object was closed. */
   closedAt: Schema.NullOr(Shared.DateTime),
+  /** Identifies the oid of the head ref associated with the pull request, even if the ref has been deleted. */
+  headRefOid: Shared.GitObjectID,
   /** Identifies the name of the head Ref associated with the pull request, even if the ref has been deleted. */
   headRefName: Schema.String,
   /** Identifies the name of the base Ref associated with the pull request, even if the ref has been deleted. */
@@ -162,7 +164,7 @@ export const PullRequestSummary = GraphQL.query("PullRequestSummary", {
       { name: "stacks", body: "Boolean!" }
     ],
     selections: [
-      { name: "repository", body: ["(owner:$", "owner", " name:$", "name", "){pullRequest(number:$", "number", "){number title url state isDraft mergeable reviewDecision additions deletions changedFiles updatedAt mergedAt closedAt headRefName baseRefName author{__typename login avatarUrl...on User{name}}latestReviews(first:20){nodes{state isMinimized author{__typename login}}}commits(last:1){nodes{commit{statusCheckRollup{state}}}}stack@include(if:$", "stacks", "){number size baseRefName}stackEntry@include(if:$", "stacks", "){position}}}"] }
+      { name: "repository", body: ["(owner:$", "owner", " name:$", "name", "){pullRequest(number:$", "number", "){number title url state isDraft mergeable reviewDecision additions deletions changedFiles updatedAt mergedAt closedAt headRefOid headRefName baseRefName author{__typename login avatarUrl...on User{name}}latestReviews(first:20){nodes{state isMinimized author{__typename login}}}commits(last:1){nodes{commit{statusCheckRollup{state}}}}stack@include(if:$", "stacks", "){number size baseRefName}stackEntry@include(if:$", "stacks", "){position}}}"] }
     ],
     fragments: []
   },
